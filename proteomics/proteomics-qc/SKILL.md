@@ -66,7 +66,7 @@ The most integrative metric (% MS2 identified / ID count) is the first alarm but
 | Replicate correlation low for one sample | Check if it correlates better with a DIFFERENT group | Distinguishes sample swap from prep failure |
 | Boxplots flat but a sample feels wrong | Re-plot the RAW (un-normalized) matrix | Normalization erased the loading evidence |
 | Deciding how to impute | Diagnose MNAR (left tail) vs MCAR (all-abundance) from the histogram FIRST | Wrong imputer corrupts present/absent calls |
-| TMT data, channel looks off | MSstatsTMT QC plots on RAW reporter intensities | See the imbalance before global median rescales it |
+| TMT data, channel looks off | Within-plex channel totals on raw reporter intensities (code below); MSstatsTMT `dataProcessPlotsTMT` only after `proteinSummarization(..., global_norm = FALSE, reference_norm = FALSE)` | The MSstatsTMT default (`global_norm = TRUE`) equalizes channel medians, so its QC plot hides imbalance; it also needs PSM-level input |
 | DIA matrix, how many proteins are real | Filter Global.Q.Value and Global.PG.Q.Value, route q internals to dia-analysis | Precursor q != protein q; both needed |
 | Long sample queue, drift suspected | Interspersed QC every 4th-5th injection + Levey-Jennings | Turns one check into a time series |
 
@@ -77,6 +77,8 @@ Default when uncertain: plot the RAW per-sample boxplots, ID counts, total signa
 **Goal:** Catch loading/injection failures and strip contaminant/decoy rows while they are still visible -- before normalization erases them.
 
 **Approach:** Load the un-normalized matrix, plot per-sample boxplots plus ID counts and total signal, filter MaxQuant `Potential contaminant`/`Reverse`/`Only identified by site` rows, THEN log-transform and normalize on the survivors.
+
+Which column is un-normalized: MaxQuant `Intensity <sample>` (`LFQ intensity <sample>` is already MaxLFQ-normalized and hides a 3x-low load); DIA-NN `Precursor.Quantity` (not `Precursor.Normalised` or `PG.MaxLFQ`); TMT raw reporter intensities before any channel/global normalization. Search engines write missing values as 0 (MaxQuant intensities, DIA-NN `PG.MaxLFQ`), so convert 0 to NaN before counting IDs or missingness.
 
 ```python
 import pandas as pd
@@ -92,15 +94,26 @@ def strip_contaminant_rows(protein_groups):
             keep &= protein_groups[match].fillna('') != '+'  # MaxQuant marks flagged rows with a literal '+'
     return protein_groups[keep]
 
-def raw_sample_qc(raw_intensities):
-    return pd.DataFrame({
-        'n_quantified': raw_intensities.notna().sum(),
-        'total_signal': raw_intensities.sum(),
-        'median_intensity': raw_intensities.median(),
-        'missing_pct': 100 * raw_intensities.isna().sum() / len(raw_intensities)})
+def raw_sample_qc(raw_intensities, sample_groups):
+    raw = raw_intensities.replace(0, np.nan)  # MaxQuant/DIA-NN write missing as 0; zeros are NOT quantified
+    qc = pd.DataFrame({
+        'n_quantified': raw.notna().sum(),
+        'total_signal': raw.sum(),
+        'median_intensity': raw.median(),
+        'missing_pct': 100 * raw.isna().sum() / len(raw)})
+    group = sample_groups.reindex(qc.index)
+    qc['fold_total_vs_group'] = qc['total_signal'] / qc.groupby(group)['total_signal'].transform('median')
+    qc['ids_vs_group'] = qc['n_quantified'] / qc.groupby(group)['n_quantified'].transform('median')
+    qc['flag'] = (qc['fold_total_vs_group'] <= 0.5) | (qc['ids_vs_group'] < 0.8)  # >=2x low total, or >20% fewer IDs
+    return qc
+
+def contaminant_fraction(protein_groups, intensity_cols, flag_col='Potential contaminant'):
+    flagged = protein_groups[flag_col].fillna('') == '+'
+    raw = protein_groups[intensity_cols].replace(0, np.nan)
+    return 100 * raw[flagged].sum() / raw.sum()  # percent of summed raw intensity, per sample
 ```
 
-Read the boxplots before normalizing: a sample shifted >=2-3x below its group median is a loading/injection failure to exclude, not to rescale. The contaminant fraction of summed intensity should be small (PTXQC default flags >1%); keratin and trypsin autolysis dominate LOW-INPUT samples (single-cell, IPs, gel bands) because they are a roughly fixed absolute amount whose fractional share explodes as load shrinks.
+Read the boxplots before normalizing, but apply the loading rule to TOTAL raw signal and ID count, not the boxplot median: a sample with total signal >=2x below its group median, or an ID count more than 15-20% below it, is a loading/injection failure to exclude, not to rescale. Left-censoring removes a low-loaded sample's weakest values, so its median looks less shifted than it is (synthetic test: 0.41x total but 0.62x median). Judge the contaminant fraction against the lab's own baseline for that sample type and check whether it differs between groups; there is no universal cutoff (PTXQC's 1% threshold belongs to its user-defined special-contaminant plot, not the general contaminant score). Keratin and trypsin autolysis dominate LOW-INPUT samples (single-cell, IPs, gel bands) because they are a roughly fixed absolute amount whose fractional share explodes as load shrinks.
 
 ## Replicate Correlation on log2
 
@@ -143,7 +156,7 @@ def geometric_cv_from_log(log_intensities):
     return 100 * np.sqrt(np.expm1(sigma ** 2))  # gCV = sqrt(exp(sigma^2) - 1)
 ```
 
-Applying the base formula to log-transformed data compresses CV ~14x (most proteins appear to have CV < 1%) -- meaningless (Brenes 2024). State normalization state, transform, and software params or the CV is uninterpretable: DIA-NN "High precision" mode silently median-normalizes, halving median CV vs "High accuracy". Technical median CV < ~10-20%, biological ~20-40%; a LOWER CV is not automatically better (loose FDR or faulty MS1 extraction produce artificially low CVs).
+Applying the base formula to log-transformed data compresses CV by roughly ln2 x mean log2 intensity -- about 15-20x at typical MaxQuant intensities, scale-dependent (most proteins appear to have CV < 1%) -- meaningless (Brenes 2024). State normalization state, transform, and software params or the CV is uninterpretable: DIA-NN "High precision" mode silently median-normalizes, halving median CV vs "High accuracy". Technical median CV < ~10-20%, biological ~20-40%; a LOWER CV is not automatically better (loose FDR or faulty MS1 extraction produce artificially low CVs).
 
 ## Missingness Mechanism and Completeness
 
@@ -152,12 +165,12 @@ Applying the base formula to log-transformed data compresses CV ~14x (most prote
 **Approach:** Diagnose the missingness profile -- left-tail concentration means MNAR (left-censored, abundance-dependent), all-abundance scatter means MCAR -- and filter on completeness before imputing only the shallow remainder.
 
 ```python
-def missingness_profile(log2_intensities, n_bins=20):
-    observed = log2_intensities.stack()
-    abundance_bins = pd.qcut(observed, n_bins, duplicates='drop')
+def missingness_profile(log2_intensities, n_bins=10):
     present_per_protein = log2_intensities.notna().mean(axis=1)
     mean_abundance = log2_intensities.mean(axis=1)
-    return mean_abundance, present_per_protein  # plot present-fraction vs abundance: rising-with-abundance = MNAR
+    abundance_bin = pd.qcut(mean_abundance, n_bins, duplicates='drop')
+    # present fraction per mean-abundance bin: rising-with-abundance = MNAR, flat = MCAR
+    return present_per_protein.groupby(abundance_bin, observed=True).mean()
 
 def completeness_filter(log2_intensities, sample_groups, min_valid_frac=0.7):
     keep = pd.Series(False, index=log2_intensities.index)
@@ -181,23 +194,52 @@ from sklearn.decomposition import PCA
 from scipy.stats import f_oneway
 
 def pca_batch_check(normalized_log2, sample_info, batch_col='batch'):
-    imputed = normalized_log2.apply(lambda r: r.fillna(r.median()), axis=1)  # temporary, for PCA only
-    pcs = PCA(n_components=5).fit(StandardScaler().fit_transform(imputed.T))
-    coords = pd.DataFrame(pcs.transform(StandardScaler().fit_transform(imputed.T)),
-                          columns=[f'PC{i+1}' for i in range(5)], index=normalized_log2.columns).join(sample_info)
-    for pc in ['PC1', 'PC2', 'PC3']:
+    # sample_info must be indexed by sample name, e.g. pd.read_csv(...).set_index('sample')
+    if set(sample_info.index) != set(normalized_log2.columns):
+        raise ValueError('sample_info index must equal the matrix column names (set_index on the sample column)')
+    # complete cases only: a row-median fill pulls high-missing (failed) samples to the centre of the PCA
+    complete = normalized_log2.dropna(how='any')
+    n_samples = complete.shape[1]
+    if n_samples < 3 or len(complete) < n_samples:
+        raise ValueError(f'too few samples ({n_samples}) or complete proteins ({len(complete)}) for PCA')
+    n_pc = min(5, n_samples - 1)
+    scaled = StandardScaler().fit_transform(complete.T)
+    pcs = PCA(n_components=n_pc).fit(scaled)
+    coords = pd.DataFrame(pcs.transform(scaled), columns=[f'PC{i+1}' for i in range(n_pc)],
+                          index=complete.columns).join(sample_info)
+    print(f'PCA on {len(complete)} complete proteins of {len(normalized_log2)}')
+    for pc in coords.columns[:min(3, n_pc)]:
         groups = [coords[coords[batch_col] == b][pc] for b in coords[batch_col].unique()]
         _, p = f_oneway(*groups)
         print(f'{pc} ~ {batch_col}: p={p:.4f}')
     return coords, pcs.explained_variance_ratio_
 ```
 
-A sample isolated from its group is a removal/re-run candidate. If batch is PC1, correct it explicitly (ComBat, or include batch in the design matrix downstream) and re-inspect; never let batch be the dominant axis going into differential testing. Visualization of the projection routes to data-visualization/dimensionality-reduction-plots.
+A sample isolated from its group is a removal/re-run candidate, but a high-missing sample is judged by `raw_sample_qc`, not by PCA. If batch is PC1, keep batch in the design matrix for the differential test (preferred when batch and condition are balanced), and use `limma::removeBatchEffect` (or ComBat) only on the matrix used for PCA/plots to re-inspect biology; do not test on a batch-corrected matrix and also model batch. Stop and ask before excluding samples, when n < 5 per group makes PCA unstable, or when no un-normalized column is available for the loading check. Visualization of the projection routes to data-visualization/dimensionality-reduction-plots.
+
+## TMT Channel Balance Within Each Plex
+
+**Goal:** Catch an under- or over-loaded TMT channel before any channel normalization.
+
+**Approach:** Per plex, compare each channel's summed raw reporter intensity to the plex median; plexes differ in overall signal, so never compare channels across plexes directly (use the reference-channel ratio for that).
+
+```python
+def tmt_channel_balance(plex_matrices):
+    # plex_matrices: {plex_name: DataFrame proteins x channels of RAW reporter intensities}
+    rows = []
+    for plex, m in plex_matrices.items():
+        total = m.replace(0, np.nan).sum()
+        for channel, fold in (total / total.median()).items():
+            rows.append({'plex': plex, 'channel': channel, 'fold_vs_plex_median': fold})
+    balance = pd.DataFrame(rows)
+    balance['investigate'] = np.abs(np.log2(balance['fold_vs_plex_median'])) > 1  # > 2x; flag > 3-4x
+    return balance
+```
 
 ## Per-Method Failure Modes
 
 ### Median normalization hides loading failures
-**Trigger:** Normalizing the matrix before inspecting raw per-sample signal. **Mechanism:** median-centering shifts each sample by a constant to equalize the very statistic that was the symptom of a low load. **Symptom:** flat, clean boxplots that hide a 3x-low sample now stretched into mid-range. **Fix:** plot RAW boxplots + ID counts + total signal first; exclude failures; then normalize.
+**Trigger:** Normalizing the matrix before inspecting raw per-sample signal, or "inspecting" an already-normalized column (MaxQuant `LFQ intensity`, DIA-NN `PG.MaxLFQ`/`Precursor.Normalised`). **Mechanism:** median-centering shifts each sample by a constant to equalize the very statistic that was the symptom of a low load. **Symptom:** flat, clean boxplots that hide a 3x-low sample now stretched into mid-range. **Fix:** plot RAW boxplots + ID counts + total signal first (MaxQuant `Intensity`, DIA-NN `Precursor.Quantity`); exclude failures; then normalize.
 
 ### Normalizing with contaminants still in the matrix
 **Trigger:** Contaminant/decoy rows left in before log + normalize. **Mechanism:** keratin/trypsin/albumin inflate the denominator and shift the median; when their load differs across groups the differential gets normalized into the real proteins. **Symptom:** spurious fold changes; a contaminant fraction that varies by group. **Fix:** filter `Potential contaminant` + `Reverse` + `Only identified by site` BEFORE log + normalize.
@@ -206,7 +248,7 @@ A sample isolated from its group is a removal/re-run candidate. If batch is PC1,
 **Trigger:** kNN on MNAR, or left-shift on MCAR. **Mechanism:** kNN borrows mid-range neighbors for a value that is low because it is absent; left-shift draws a deep low for a value missing at random. **Symptom:** killed present/absent calls (kNN-on-MNAR) or inflated false lows (left-shift-on-MCAR). **Fix:** diagnose left-tail vs all-abundance from the histogram first; mechanics route to quantification.
 
 ### CV computed on log-transformed data
-**Trigger:** Base CV formula applied after log2. **Mechanism:** SD/mean is defined for linear intensity; logging compresses it ~14x. **Symptom:** most proteins appear to have CV < 1%. **Fix:** compute on linear intensity, or use the geometric-CV formula on logged values; always state transform + normalization + software.
+**Trigger:** Base CV formula applied after log2. **Mechanism:** SD/mean is defined for linear intensity; logging compresses it by about ln2 x mean log2 intensity (15-20x at typical MaxQuant intensities). **Symptom:** most proteins appear to have CV < 1%. **Fix:** compute on linear intensity, or use the geometric-CV formula on logged values; always state transform + normalization + software.
 
 ### Pearson r on raw intensity
 **Trigger:** Correlating un-logged intensities. **Mechanism:** a few high-abundance proteins dominate the covariance. **Symptom:** r = 0.99 while the bulk disagrees. **Fix:** log2 before correlating; Spearman as a robustness check only.
@@ -246,7 +288,10 @@ A sample isolated from its group is a removal/re-run candidate. If batch is PC1,
 | Contaminant rows have `True`/`False`, filter keeps all | MaxQuant flags with a literal `'+'`, not a boolean | filter `col != '+'` |
 | CV unexpectedly tiny (< 1%) | base CV formula applied to log2 data | compute on linear intensity or use geometric CV |
 | `r = 0.99` but samples clearly differ | Pearson on raw (un-logged) intensity | log2 transform before correlating |
-| PCA dominated by injection day | batch effect, not biology | correct (ComBat / batch in design) and re-inspect; do not proceed |
+| PCA dominated by injection day | batch effect, not biology | batch in the design for the test; `removeBatchEffect`/ComBat only for plots, then re-inspect |
+| Every sample shows 0% missing and identical ID counts | MaxQuant/DIA-NN zeros counted as values | `.replace(0, np.nan)` before counting |
+| `TypeError: At least two samples are required; got 1` in `pca_batch_check` | `sample_info` has a RangeIndex, so the join produced NaN batches | `sample_info.set_index('sample')` |
+| MSstatsTMT QC plot shows identical channel medians | `proteinSummarization` default `global_norm = TRUE` | re-run with `global_norm = FALSE, reference_norm = FALSE` for the balance view |
 | PTXQC "not found" via `BiocManager` | PTXQC is on CRAN, not Bioconductor | `install.packages('PTXQC')` |
 | `createReport()` errors on a dataframe arg | it takes a txt-folder path / mzTab / YAML, not dataframes | pass `txt_folder=` (the MaxQuant `txt/` directory) |
 

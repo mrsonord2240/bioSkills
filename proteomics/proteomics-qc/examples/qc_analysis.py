@@ -60,7 +60,7 @@ for col in contaminant_flags:
     if match is not None:
         keep &= protein_groups[match].fillna('') != '+'
 contaminant_frac = 100 * raw[~keep.values].sum().sum() / raw.sum().sum()
-print(f'Contaminant fraction of summed intensity: {contaminant_frac:.1f}% (PTXQC flags >1%)')
+print(f'Contaminant fraction of summed intensity: {contaminant_frac:.1f}% (compare to your lab baseline and across groups)')
 clean = protein_groups[keep][intensity_cols]
 print(f'Rows after contaminant removal: {len(clean)} (was {len(protein_groups)})\n')
 
@@ -92,10 +92,9 @@ low, high = mean_abundance.quantile(0.25), mean_abundance.quantile(0.75)
 print(f'\nMissingness: present-fraction low-abundance={present_frac[mean_abundance <= low].mean():.2f} '
       f'high-abundance={present_frac[mean_abundance >= high].mean():.2f} (rising-with-abundance = MNAR -> impute LOW)')
 
-# PCA / batch (impute temporarily for projection only; drop rows missing across all survivors)
-complete = normalized.dropna(how='all')
-imputed = complete.apply(lambda r: r.fillna(r.median()), axis=1)
-scaled = StandardScaler().fit_transform(imputed.T)
+# PCA / batch on complete cases (a median fill would pull high-missing samples to the centre)
+complete = normalized.dropna(how='any')
+scaled = StandardScaler().fit_transform(complete.T)
 pca = PCA(n_components=3).fit(scaled)
 coords = pd.DataFrame(pca.transform(scaled), columns=['PC1', 'PC2', 'PC3'], index=survivors)
 coords['condition'] = groups_kept.values
