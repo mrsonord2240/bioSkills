@@ -10,6 +10,8 @@ goal_approach_exempt: true
 
 Reference examples tested with: BioPython 1.83+, matplotlib 3.8+. Rich-figure alternatives: ggtree 3.12+ / treeio 1.28+ / ggtreeExtra 1.14+ (Bioconductor), ete4 4.x (Python), iTOL v6 (web), FigTree (desktop).
 
+ggtree 3.14.0 with ggplot2 4.0.3 (checked 2026-09): rectangular, circular and fan layouts and `geom_range` work; `slanted`, `equal_angle`, `daylight` and `ape` layouts, `geom_tiplab(align = TRUE)` and `gheatmap()` fail (`could not find function "is.waive"`, `@mapping must be <ggplot2::mapping>`). Fallbacks: `ape::plot.phylo(type = 'unrooted')` for unrooted views, `ggtreeExtra::geom_fruit` instead of `gheatmap`, or pin ggplot2 < 4. ETE4 did not build from pip on Windows / Python 3.12; ete3 renders headlessly only with PyQt5 and `QT_QPA_PLATFORM=offscreen` and then drew no tip text -- prefer ggtree for headless CI figures.
+
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show biopython` then `help(Phylo.draw)` to check signatures
 - R: `packageVersion('ggtree')` then `?ggtree` to verify layout and geom arguments
@@ -98,44 +100,53 @@ Label tips, and show support with its measure named (never a bare integer):
 def tip_only(clade):
     return clade.name if clade.is_terminal() else ''
 
-def support_label(clade):
-    # the measure MUST be stated in the legend/caption; here values are bootstrap percentages
-    if not clade.is_terminal() and clade.confidence is not None:
-        return f'{clade.confidence:.0f}'
-    return ''
+import re
 
+for clade in tree.get_nonterminals():            # IQ-TREE -B + --alrt: '88.5/92' stays in clade.name, confidence None
+    if clade.confidence is None and clade.name and re.fullmatch(r'[\d.]+/[\d.]+', clade.name):
+        clade.sh_alrt, clade.ufboot = (float(v) for v in clade.name.split('/'))   # SH-aLRT / UFBoot (last)
+        clade.name = None                        # otherwise the default label_func prints the raw string
+
+def support_label(clade):
+    # the measure MUST be stated in the legend/caption
+    if clade.is_terminal():
+        return ''
+    if getattr(clade, 'ufboot', None) is not None:
+        return f'{clade.sh_alrt:.0f}/{clade.ufboot:.0f}'
+    return f'{clade.confidence:.0f}' if clade.confidence is not None else ''
+
+if not any(support_label(c) for c in tree.get_nonterminals()):
+    print('WARNING: no internal clade has readable support -- the figure will show none')
 fig, ax = plt.subplots(figsize=(12, 10))
 Phylo.draw(tree, axes=ax, do_show=False, label_func=tip_only, branch_labels=support_label)
-ax.set_title('Bootstrap support shown at internal nodes')
+ax.set_title('Node support: SH-aLRT (%) / UFBoot (%)')   # name the measure(s) the file actually holds
 fig.savefig('supported_tree.svg', bbox_inches='tight')
 plt.close(fig)
 ```
 
-Color branches by group (convert to phyloXML for native color support):
+Color branches by group (set `.color` on the MRCA clade; descendants inherit it):
 
 ```python
-from Bio.Phylo.PhyloXML import BranchColor
-
-xtree = tree.as_phyloxml()                     # phyloXML carries branch color through draw()
-for clade in xtree.find_clades():
-    if clade.name and clade.name.startswith('Homo'):
-        clade.color = BranchColor.from_name('red')
+tree.common_ancestor({'name': 'Homo_sapiens'}, {'name': 'Pongo_abelii'}).color = 'red'   # works on a Newick-read tree
 
 fig, ax = plt.subplots(figsize=(10, 8))
-Phylo.draw(xtree, axes=ax, do_show=False)
+Phylo.draw(tree, axes=ax, do_show=False)       # as_phyloxml() is needed only to EXPORT colors to phyloXML
 fig.savefig('colored_tree.pdf', bbox_inches='tight')
 plt.close(fig)
 ```
 
-Scale the panel to tip count so labels stay legible, and drop the axis frame:
+Scale the panel to tip count so labels stay legible, keeping the branch-length axis (Bio.Phylo has no scale-bar artist, so the x axis IS the scale):
 
 ```python
 n_tips = len(tree.get_terminals())
-height = max(8, n_tips * 0.25)                  # ~0.25 in/tip keeps ~6-8 pt labels from colliding
+if n_tips > 150:
+    print('>~150 tips: switch to a circular layout or strips/rings (ggtree, iTOL) instead of a taller panel')
+height = min(max(8, n_tips * 0.25), 40)         # ~0.25 in/tip keeps ~6-8 pt labels from colliding; capped
 
 fig, ax = plt.subplots(figsize=(10, height))
 Phylo.draw(tree, axes=ax, do_show=False)
-ax.axis('off')
+ax.set_yticks([])                               # hide only the meaningless y ticks and spines
+ax.spines[['left', 'top', 'right']].set_visible(False)
 fig.savefig('scaled_tree.pdf', bbox_inches='tight')
 plt.close(fig)
 ```
@@ -154,7 +165,7 @@ For circular/fan/unrooted layouts, metadata heatmaps, dual support, or BEAST HPD
 **Trigger:** A node shows "98" with no legend, or two measures are printed without saying which is which.
 **Mechanism:** The reader defaults to assuming bootstrap, but it may be a posterior (much weaker for the same number), an SH-aLRT (cutoff 80), a UFBoot (cutoff 95, not the BP-70 scale), or a TBE.
 **Symptom:** A weakly resolved bush reads as a confident comb because the displayed number is over-read.
-**Fix:** Always state the measure(s) and their order (e.g. "SH-aLRT/UFBoot" at each node); collapse nodes below threshold into polytomies rather than drawing fake resolution, since bootstrap, posterior, SH-aLRT, and UFBoot sit on different scales.
+**Fix:** Always state the measure(s) and their order (e.g. "SH-aLRT/UFBoot" at each node); collapse nodes below threshold into polytomies rather than drawing fake resolution, since bootstrap, posterior, SH-aLRT, and UFBoot sit on different scales. Support belongs to a branch but is stored on a node: after Bio.Phylo `root_with_outgroup` about half the labels sit on the wrong bipartition while the figure looks plausible. Re-attach support by bipartition after rerooting in Bio.Phylo, or root in R with `treeio::root(..., edgelabel = TRUE)` / `ape::root(..., edgelabel = TRUE)`, and verify one split by hand.
 
 ### Tip-Label Overplotting on Large Trees
 **Trigger:** A rectangular layout past a few hundred tips.
@@ -172,7 +183,7 @@ For circular/fan/unrooted layouts, metadata heatmaps, dual support, or BEAST HPD
 **Trigger:** Drawing a BEAST/MrBayes time-tree with point-estimate node ages and no HPD bars.
 **Mechanism:** The 95% HPD intervals on node heights ARE the result; omitting them asserts false precision.
 **Symptom:** Node ages look known to the day; a reviewer asks where the credible intervals went.
-**Fix:** Draw the HPD bars via treeio `read.beast()` -> ggtree `geom_range('height_0.95_HPD')` (introspect the column name; it varies by source program and treeio version), or enable node bars in FigTree; never draw an annotated Bayesian tree with Bio.Phylo, which drops the annotations silently.
+**Fix:** Draw the HPD bars via treeio `read.beast()` -> ggtree `geom_range('height_0.95_HPD', center = 'height')` (introspect the column name; it varies by source program and treeio version). The default `center = 'auto'` keeps the bar width but centres it on the node age, misplacing asymmetric HPDs; check one drawn bar against the annotation. Or enable node bars in FigTree; never draw an annotated Bayesian tree with Bio.Phylo, which drops the annotations silently.
 
 ### Raster Export for Publication
 **Trigger:** Saving a tree as a 150-dpi PNG for a paper.
@@ -206,7 +217,9 @@ Lock the branch-length scale; do not let the figure engine non-uniformly stretch
 |-----------------|-------|----------|
 | BEAST HPD bars absent from a Python figure | drew an annotated tree with Bio.Phylo | route through treeio `read.beast` + ggtree `geom_range` |
 | Figure not saving / blank | `do_show=True` opens a window instead of writing | pass `do_show=False`, then `fig.savefig(...)` |
-| Branch colors not appearing | plain Newick tree has no color slot | convert with `tree.as_phyloxml()` and set `clade.color` |
+| Branch colors not appearing | color set on a tip or the wrong clade | set `clade.color` on the MRCA clade (inherits to descendants); `as_phyloxml()` is only needed for phyloXML export |
+| Support labels missing on an IQ-TREE tree | `SH-aLRT/UFBoot` label kept in `clade.name`, `confidence` None | parse `clade.name` as in the support recipe; warn when no clade has support |
+| HPD bars shifted off the annotated interval | ggtree `geom_range` default `center = 'auto'` | `geom_range('height_0.95_HPD', center = 'height')` |
 | Labels overlap into a black band | too many tips for rectangular layout | increase panel height, rotate labels, or switch to circular/iTOL |
 | "Basal" claim on a radial tree | narrated an unrooted layout as if rooted | root explicitly (tree-manipulation) and show the root before any directional claim |
 | Support number misread | bare integer with no measure stated | label the measure(s) and order; collapse sub-threshold nodes to polytomies |
