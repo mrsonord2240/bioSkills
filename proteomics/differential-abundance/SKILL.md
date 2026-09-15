@@ -7,7 +7,7 @@ primary_tool: limma
 
 ## Version Compatibility
 
-Reference examples tested with: limma 3.58+, DEqMS 1.20+, proDA 1.20+, ashr 2.2+, pandas 2.2+, scipy 1.12+, statsmodels 0.14+
+Reference examples tested with: limma 3.62.2, DEqMS 1.24.0, proDA 1.20.0, ashr 2.2.63, pandas 3.0.5, scipy 1.18.1, statsmodels 0.15.0 (checked 2026-09-15)
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -24,11 +24,11 @@ package and adapt the example to match the actual API rather than retrying.
 - R: `proDA::test_diff()` / `msqrob2` / `MSstats` when missing values are extensive (model the dropout, no imputation)
 - Python: `scipy.stats.ttest_ind(equal_var=False)` + `statsmodels` BH (large n only; no moderation)
 
-Scope: this skill owns the statistical TEST -- design/contrast construction, variance moderation, missingness handling, multiple-testing correction, minimum-fold-change testing, and fold-change shrinkage. Peptide-to-protein summarization and normalization mechanics -> proteomics/quantification. Volcano/MA plots -> data-visualization/volcano-and-ma-plots. Enrichment of the hit list -> pathway-analysis/go-enrichment. OUT OF SCOPE: how MaxLFQ/TMP/IRS produce the matrix (quantification); how to draw a volcano (data-visualization).
+Scope: this skill owns the statistical TEST -- design/contrast construction, variance moderation, missingness handling, multiple-testing correction, minimum-fold-change testing, and fold-change shrinkage. Peptide-to-protein summarization and normalization mechanics -> proteomics/quantification. Volcano/MA plots -> data-visualization/volcano-and-ma-plots. Enrichment of the hit list -> pathway-analysis/go-enrichment. OUT OF SCOPE: how MaxLFQ/TMP/IRS produce the matrix (quantification); how to draw a volcano (data-visualization); single-sample (n=1) comparisons, and diagnosis or treatment decisions for an individual patient.
 
 ## The Single Most Important Modern Insight -- Model the Missingness, Moderate the Variance, Test at the Feature Level
 
-1. **Missing values in label-free MS are left-censored MNAR -- missing BECAUSE the intensity is low -- and imputing them (especially Perseus/MaxQuant downshift) manufactures SYSTEMATIC false positives.** Downshift draws each missing value from a narrow Gaussian (mean = mu - 1.8*sigma, SD = 0.3*sigma). For an on/off protein (seen in all of group A, missing in all of B) the t-statistic numerator is inflated by construction (mean_B fixed ~1.8 sigma below observed, deterministic) and the denominator is artificially deflated (all imputed B values from one 0.3-sigma Gaussian -> collapsed within-group SD) -> enormous t -> tiny p. Because every on/off protein is treated identically, the false positives are systematic: the volcano-plot "anchor/wing" artifact (rigid near-vertical streaks of pinned points far out on both x-axis sides). The honest statement is "undetected in group B", not "20x lower, p=1e-6". The correct approach is to MODEL the dropout in the likelihood -- proDA (probabilistic dropout), msqrob2, MSstats-AFT -- NOT fill it (Lazar 2016; Ahlmann-Eltze & Anders 2019).
+1. **Missing values in label-free MS are left-censored MNAR -- missing BECAUSE the intensity is low -- and imputing them (especially Perseus/MaxQuant downshift) turns a detection limit into numbers the test treats as measurements. Downshift draws each missing value from a Gaussian with mean = mu - 1.8*sigma and SD = 0.3*sigma, where mu and sigma describe ALL proteins in that run (sigma is not the replicate SD). For an on/off protein (seen in all of group A, missing in all of B) the fold change is therefore set by the imputation constant and the protein's own intensity, not by biology -- the volcano-plot "anchor/wing" artifact (on/off proteins on a streak whose logFC tracks average intensity). The p-value carries no FDR guarantee: whether 0.3*sigma is narrower or wider than the real replicate SD decides whether imputation inflates false positives or only costs power. The honest statement is "undetected in group B", not "20x lower, p=1e-6". The correct approach is to MODEL the dropout in the likelihood -- proDA (probabilistic dropout), msqrob2, MSstats-AFT -- NOT fill it (Lazar 2016; Ahlmann-Eltze & Anders 2019).
 2. **At the n=3-5 replicates proteomics actually uses, per-protein variance has only 2-4 residual df and is unusable raw -- variance moderation is the load-bearing element, not optional.** limma borrows a prior d0 across all proteins so a 4-replicate design tests on ~10 df instead of 6; `trend=TRUE` makes the prior a function of mean intensity (effectively mandatory for label-free, where a single global prior mis-calibrates FDR across the abundance range); `robust=TRUE` Winsorizes outlier variances (Phipson 2016). DEqMS makes the prior a function of PSM/peptide count and generally outperforms limma-trend when quantification depth varies across proteins (Zhu 2020).
 3. **Feature/peptide-level modeling beats summarize-then-test.** Summarizing first (one number per protein per run) discards the within-protein between-peptide variance and the correct degrees of freedom: 12 consistent peptides deserve a smaller SE than 12 disagreeing ones, but after summarization both look equally certain, and a protein with 30 observations looks as informative as one with 3. msqrob2/MSstats keep every peptide as a degree of freedom; this is why the same data gives different answers (Goeminne 2016; Sticker 2020; Choi 2014).
 
@@ -40,7 +40,7 @@ Scope: this skill owns the statistical TEST -- design/contrast construction, var
 | DEqMS | Zhu 2020 | prior variance = loess of log-variance vs log2(count); precision follows quantification DEPTH not just intensity | TMT (count=PSM) and label-free DDA (count=peptide); quant depth varies; preferred over limma-trend |
 | proDA | Ahlmann-Eltze & Anders 2019 (preprint) | probabilistic dropout: missing = left-censored, integrated under a per-sample sigmoid dropout curve; EB on location and variance; no imputation | label-free DDA with many MNAR missing values, small n, proteins absent in one group |
 | msqrob2 | Sticker 2020; Goeminne 2016 | peptide-level robust ridge: Huber M-estimation downweights outlier peptides, ridge shrinks effects from few observations, EB variance moderation | label-free DDA, outlier-peptide / unbalanced-coverage risk; best FDR in hard spike-in regimes |
-| MSstats | Choi 2014 | feature-level linear mixed model (group fixed + feature + run/subject random); AFT censored handling for missing | SRM/PRM/DIA, technical replicates, nested/repeated-measures, labeled designs |
+| MSstats | Choi 2014 | feature-level linear mixed model (group fixed + feature + run/subject random); AFT censored imputation only inside `dataProcess(MBimpute = TRUE)` (`groupComparison` has no censoring argument) | SRM/PRM/DIA, technical replicates, nested/repeated-measures, labeled designs |
 | Welch t-test + BH | -- | per-protein two-sample t with `equal_var=False` + Benjamini-Hochberg | large n (>10/group), Python-only; no moderation, unusable at n=3-5 |
 | ashr | Stephens 2017 | mixture prior with a point mass at zero; posterior means shrink uncertain effects toward zero | recovering "which proteins truly changed and by how much" (not for GSEA ranking) |
 | volcano / MA plot | -- | (route OUT) | visualization -> data-visualization/volcano-and-ma-plots |
@@ -65,13 +65,18 @@ Default when uncertain: protein-level summary matrix at n=3-5 -> limma `eBayes(t
 
 **Goal:** Identify differentially abundant proteins using moderated statistics that borrow information across all proteins.
 
-**Approach:** Build the design (batch as a covariate when present), fit the linear model and contrast, apply EB moderation with the intensity trend and robust fitting, then extract BH-corrected results. Never feed `removeBatchEffect` output to `lmFit`.
+**Approach:** Filter to proteins with enough valid values per group (rows with no or too few values give `NA` averages that stop `eBayes(trend = TRUE)`), build the design (batch as a covariate when present), fit the linear model and contrast, apply EB moderation with the intensity trend and robust fitting, then extract BH-corrected results. Report proteins removed by the filter (e.g. undetected in one group) separately. Never feed `removeBatchEffect` output to `lmFit`.
 
 ```r
 library(limma)
 
+cond <- factor(sample_info$condition)
+# Valid-value filter BEFORE lmFit: >= 2 values in every group (study choice; 3 of 4 is common)
+n_valid <- sapply(levels(cond), function(g) rowSums(!is.na(protein_matrix[, cond == g, drop = FALSE])))
+protein_matrix <- protein_matrix[apply(n_valid >= 2, 1, all), ]
+
 design <- model.matrix(~0 + condition + batch, data = sample_info)  # batch in the model, not removed first
-colnames(design)[1:2] <- levels(factor(sample_info$condition))
+colnames(design)[seq_len(nlevels(cond))] <- levels(cond)
 
 fit <- lmFit(protein_matrix, design)
 contrast_matrix <- makeContrasts(Treatment - Control, levels = design)
@@ -86,12 +91,12 @@ results <- topTable(fit2, coef = 1, number = Inf, adjust.method = 'BH')
 
 **Goal:** Call proteins whose effect exceeds a biologically meaningful threshold, not merely differ from zero.
 
-**Approach:** Use `treat()` against the moderated null and read `topTreat()`. NEVER `topTable(lfc=...)` nor a post-hoc volcano double filter (`abs(logFC) > 1 & adj.P.Val < 0.05`); conditioning on both the FC and the p-value selects for high-variance nulls (a collider effect) and inflates realized FDR above 50% (Ebrahimpoor & Goeman 2021).
+**Approach:** Use `treat()` against the moderated null and read `topTreat()`. `treat()` re-estimates the prior and its `trend`/`robust` default to FALSE, so pass both again. Keep the result in its own object so `fit2` stays the eBayes fit for DEqMS and ashr. NEVER `topTable(lfc=...)` nor a post-hoc volcano double filter (`abs(logFC) > 1 & adj.P.Val < 0.05`): the BH guarantee then refers to FC = 0, not to the FC threshold, and conditioning on both FC and p can select high-variance nulls. How much FDR inflates depends on the regime -- above 50% for top-ranked lists with many small effects (Ebrahimpoor & Goeman 2021), far less when true effects are large.
 
 ```r
 LFC_THRESHOLD <- log2(1.2)  # 1.2-fold floor; treat tests against this null, no double-filter FDR inflation
-fit2 <- treat(fit2, lfc = LFC_THRESHOLD)
-results <- topTreat(fit2, coef = 1, number = Inf)  # topTreat omits the B column
+fit_treat <- treat(fit2, lfc = LFC_THRESHOLD, trend = TRUE, robust = TRUE)  # treat's trend/robust default to FALSE
+results <- topTreat(fit_treat, coef = 1, number = Inf)  # topTreat omits the B column
 ```
 
 ## DEqMS Workflow (R)
@@ -103,7 +108,8 @@ results <- topTreat(fit2, coef = 1, number = Inf)  # topTreat omits the B column
 ```r
 library(DEqMS)
 
-# fit2 is the limma fit through eBayes (above)
+# fit2 is the limma fit through eBayes (above), after the valid-value filter
+stopifnot(all(fit2$df.residual > 0))  # NA-sigma rows make spectraCounteBayes recycle loess predictions onto the wrong proteins
 fit2$count <- psm_count_per_protein[rownames(fit2$coefficients)]  # PSM for TMT, peptide for LFQ; min across batches
 fit3 <- spectraCounteBayes(fit2)
 
@@ -120,11 +126,12 @@ results <- outputResult(fit3, coef_col = 1)
 ```r
 library(proDA)
 
-fit <- proDA(protein_matrix, design = ~condition, col_data = sample_info,
+fit <- proDA(protein_matrix, design = ~condition + batch, col_data = sample_info,
              reference_level = 'Control')
-result_names(fit)  # list testable coefficients first
-results <- test_diff(fit, conditionTreatment - conditionControl)
+result_names(fit)  # Intercept, conditionTreatment, batch...: test a coefficient name
+results <- test_diff(fit, 'conditionTreatment')
 # columns: name, pval, adj_pval, diff (log2FC), t_statistic, se
+# do not report diff for proteins with no observed value in a group: the location prior sets it (sign can be wrong)
 ```
 
 ## Python Workflow
@@ -151,6 +158,8 @@ def differential_abundance(normalized, case_cols, ctrl_cols):
         if len(case) >= 2 and len(ctrl) >= 2:
             _, pval = stats.ttest_ind(case, ctrl, equal_var=False)  # Welch; scipy defaults to Student's True
             rows.append({'protein': protein, 'log2fc': case.mean() - ctrl.mean(), 'pvalue': pval})
+    if not rows:
+        raise ValueError('No protein has >= 2 non-missing values in both groups; a two-sample test is not possible')
     df = pd.DataFrame(rows)
     df['padj'] = multipletests(df['pvalue'], method='fdr_bh')[1]  # default is Holm-Sidak; pass fdr_bh explicitly
     return df
@@ -165,8 +174,9 @@ def differential_abundance(normalized, case_cols, ctrl_cols):
 ```r
 library(ashr)
 
-se <- sqrt(fit2$s2.post) * fit2$stdev.unscaled[, 1]
-shrunk <- ash(fit2$coefficients[, 1], se, mixcompdist = 'normal')
+ok <- !is.na(fit2$coefficients[, 1]) & !is.na(fit2$s2.post)  # ash() returns PosteriorMean 0 / prior lfsr for NA rows
+se <- sqrt(fit2$s2.post[ok]) * fit2$stdev.unscaled[ok, 1]
+shrunk <- ash(fit2$coefficients[ok, 1], se, mixcompdist = 'normal')
 shrunken_fc <- shrunk$result$PosteriorMean  # report alongside raw logFC, not as a replacement for GSEA
 lfsr <- shrunk$result$lfsr
 ```
@@ -175,8 +185,8 @@ lfsr <- shrunk$result$lfsr
 
 ### Downshift / any imputation feeding a variance-based test
 **Trigger:** Perseus/MaxQuant downshift (or MinDet/MinProb/QRILC) fills NAs, then limma/t-test runs on the filled matrix.
-**Mechanism:** Imputed values come from one narrow Gaussian -> fabricated low within-group variance + deterministic mean offset -> inflated t.
-**Symptom:** Volcano "anchor/wing" -- rigid near-vertical streaks of pinned on/off proteins at high significance; realized FDR far above nominal.
+**Mechanism:** Imputed values come from one Gaussian set by the run-wide intensity distribution -> the fold change of an on/off protein is fixed by the downshift constant, and the imputed within-group SD (0.3 x run-wide SD) is unrelated to the real replicate SD, so the test is anticonservative or merely underpowered depending on the data.
+**Symptom:** Volcano "anchor/wing" -- on/off proteins on a streak whose logFC tracks average intensity; p-values and FDR without a guarantee.
 **Fix:** Model the missingness instead (proDA / msqrob2 / MSstats-AFT); report on/off proteins as "undetected in group X".
 
 ### kNN imputation on left-censored data
@@ -212,7 +222,7 @@ lfsr <- shrunk$result$lfsr
 ### FC + significance double filter
 **Trigger:** `abs(logFC) > 1 & adj.P.Val < 0.05` applied after the test.
 **Mechanism:** |logFC| is large for a true effect OR a large SE; filtering on both the FC and the p (both depend on SE) selects high-variance nulls (collider effect).
-**Symptom:** Realized FDR above 50% at nominal 5% (Ebrahimpoor & Goeman 2021).
+**Symptom:** Realized FDR above nominal with no guarantee -- above 50% for top-ranked lists with many small effects (Ebrahimpoor & Goeman 2021), much lower when true effects are large.
 **Fix:** `treat()`+`topTreat()` or SAM s0, which sit inside the statistic before selection.
 
 ## Quantitative Thresholds
@@ -221,12 +231,12 @@ lfsr <- shrunk$result$lfsr
 |-----------|--------|-----------|
 | n=3-5 replicates -> 2-4 residual df | -- | raw per-protein variance unusable; moderation is mandatory, not optional |
 | limma adds prior d0 (~4) df | Ritchie 2015 | a 4-replicate design tests on ~10 df vs 6; the borrowed df is the benefit |
-| downshift mean = mu - 1.8*sigma, SD = 0.3*sigma | Perseus default | 1.8 places imputed mass ~3.6th percentile; 0.3 gives only 30% of real spread -> manufactured false positives |
+| downshift mean = mu - 1.8*sigma, SD = 0.3*sigma | Perseus default | sigma is the run-wide SD across proteins, not the replicate SD; the imputed FC is set by the constant, and 0.3*sigma can be wider or narrower than real replicate spread |
 | `trend=TRUE` effectively mandatory for label-free | Ritchie 2015 | a single global prior mis-calibrates FDR across abundance |
 | min-FC floor log2(1.2) (1.2-fold) via treat() | -- | example floor; common alternatives 1.5-fold (~0.58) or 2-fold (1.0); set by biology, tested against the moderated null |
 | BH adjusted p < 0.05 | Benjamini-Hochberg | controls FDR over the WHOLE rejection set, not subsets carved out afterward |
 | DEqMS multi-batch TMT: minimum count across batches | Zhu 2020 | the bottleneck batch sets the realized precision |
-| realized FDR > 50% from FC+significance double filter | Ebrahimpoor & Goeman 2021 | top-100 at n=12 exceeded 50% FDR at nominal 5% |
+| realized FDR > 50% from FC+significance double filter | Ebrahimpoor & Goeman 2021 | top-100 at n=12 exceeded 50% FDR at nominal 5%; regime-specific (many small effects), not a general rate |
 
 ## Common Errors
 
@@ -235,7 +245,13 @@ lfsr <- shrunk$result$lfsr
 | `results$FDR` is NULL | limma `topTable`/`topTreat` have no `$FDR` column | use `adj.P.Val` (BH-adjusted p) |
 | `topTreat` row has no `B` | `topTreat` omits `B` (a `topTable` column) | read `logFC, AveExpr, t, P.Value, adj.P.Val` |
 | FDR mis-calibrated across abundance | `eBayes` with `trend=FALSE` on intensity data | `eBayes(fit, trend = TRUE, robust = TRUE)` |
-| min-FC test inflates FDR | `topTable(lfc=...)` or post-hoc volcano double filter | `treat(fit, lfc=log2(1.2))` then `topTreat()` |
+| min-FC test inflates FDR | `topTable(lfc=...)` or post-hoc volcano double filter | `treat(fit, lfc=log2(1.2), trend=TRUE, robust=TRUE)` then `topTreat()` |
+| treat() list moderated without the intensity trend | `treat()` re-estimates the prior with `trend=FALSE, robust=FALSE` by default | pass `trend = TRUE, robust = TRUE` to `treat()` |
+| `eBayes`: `prior.weights contain NA values` | rows with no valid value (MaxQuant all-zero LFQ rows) or too few per group | valid-value filter before `lmFit` |
+| DEqMS warning `longer object length is not a multiple of shorter object length` | rows with NA sigma / zero residual df reach `spectraCounteBayes` | filter before `lmFit`; require `fit2$df.residual > 0` |
+| proDA: `object 'conditionControl' not found` | intercept design with `reference_level`: coefficients are `Intercept`, `conditionTreatment` | `test_diff(fit, 'conditionTreatment')` |
+| `makeContrasts`: `object 'DrugB' not found` | design rename hard-coded to two groups | `colnames(design)[seq_len(nlevels(cond))] <- levels(cond)` |
+| Python `ValueError: No protein has >= 2 non-missing values` | a group has one sample, or no protein is observed twice per group | not a two-sample test; do not run DA on n=1 |
 | anticonservative p after batch correction | `removeBatchEffect` output fed to `lmFit` | put batch in the design: `~ batch + condition` |
 | DEqMS columns missing | forgot `fit$count` or read limma columns | set `fit$count`, run `spectraCounteBayes`, read `sca.adj.pval` from `outputResult` |
 | Student's t instead of Welch | `scipy.stats.ttest_ind` defaults `equal_var=True` | pass `equal_var=False` |

@@ -1,4 +1,4 @@
-# Reference: numpy 1.26+, pandas 2.2+, scipy 1.12+, statsmodels 0.14+ | Verify API if version differs
+# Reference: numpy 2.5.3, pandas 3.0.5, scipy 1.18.1, statsmodels 0.15.0 | Verify API if version differs
 # Differential protein abundance: log2 transform, median normalization, Welch's t-test, BH correction.
 # Welch + BH has NO variance moderation -- only appropriate at large n (>10/group). At n=3-5 use limma/DEqMS.
 import numpy as np
@@ -22,6 +22,8 @@ def differential_abundance(normalized, case_cols, ctrl_cols):
         if len(case) >= MIN_OBS_PER_GROUP and len(ctrl) >= MIN_OBS_PER_GROUP:
             _, pval = stats.ttest_ind(case, ctrl, equal_var=False)  # Welch; scipy defaults to Student's True
             rows.append({'protein': protein, 'log2fc': case.mean() - ctrl.mean(), 'pvalue': pval})
+    if not rows:
+        raise ValueError(f'No protein has >= {MIN_OBS_PER_GROUP} non-missing values in both groups; a two-sample test is not possible')
     df = pd.DataFrame(rows)
     df['padj'] = multipletests(df['pvalue'], method='fdr_bh')[1]  # default is Holm-Sidak; pass fdr_bh explicitly
     df['significant'] = df['padj'] < 0.05

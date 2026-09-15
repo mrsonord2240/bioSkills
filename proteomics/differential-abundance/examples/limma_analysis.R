@@ -1,4 +1,4 @@
-# Reference: limma 3.58+, ashr 2.2+ | Verify API if version differs
+# Reference: limma 3.62.2, ashr 2.2.63 | Verify API if version differs
 # Differential protein abundance with limma empirical-Bayes moderation, treat() min-FC, and ashr FC shrinkage.
 # At n=3-5 the per-protein variance is unusable raw; trend=TRUE + robust=TRUE moderation is the load-bearing step.
 library(limma)
@@ -18,8 +18,9 @@ rownames(log2_matrix) <- sprintf('P%04d', seq_len(n_proteins))
 sample_info <- data.frame(condition = factor(rep(c('Control', 'Treatment'), each = n_per_group),
                                              levels = c('Control', 'Treatment')))
 
-# Normalize log2 intensities (median centering); summarization/normalization mechanics live in quantification
-log2_norm <- normalizeBetweenArrays(log2_matrix, method = 'scale')
+# Median-center log2 intensities (subtract, never scale, log values); normalization mechanics live in quantification
+col_medians <- apply(log2_matrix, 2, median, na.rm = TRUE)
+log2_norm <- sweep(log2_matrix, 2, col_medians) + median(col_medians)
 
 design <- model.matrix(~0 + condition, data = sample_info)
 colnames(design) <- levels(sample_info$condition)
@@ -33,7 +34,7 @@ results <- topTable(fit2, coef = 1, number = Inf, adjust.method = 'BH')  # colum
 results$significant <- results$adj.P.Val < 0.05
 
 # Minimum-fold-change testing: treat()+topTreat(), never topTable(lfc=...) nor a post-hoc volcano double filter
-fit_treat <- treat(fit2, lfc = LFC_THRESHOLD)
+fit_treat <- treat(fit2, lfc = LFC_THRESHOLD, trend = TRUE, robust = TRUE)  # treat's trend/robust default to FALSE
 treat_results <- topTreat(fit_treat, coef = 1, number = Inf)  # topTreat omits the B column
 
 # Fold-change shrinkage for effect-size recovery (report alongside raw logFC; use raw FC for GSEA)
