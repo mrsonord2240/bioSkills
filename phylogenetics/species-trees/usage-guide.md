@@ -12,12 +12,12 @@ Coalescent summary methods (the ASTRAL family) stay consistent because they ask 
 # ASTER package (provides astral/ASTRAL-III, wastral, astral-pro)
 conda install -c bioconda aster      # or build from https://github.com/chaoszhang/ASTER
 
-# IQ-TREE2 (per-locus gene trees and concordance factors)
+# IQ-TREE (per-locus gene trees and concordance factors); bioconda now installs IQ-TREE 3 as iqtree3/iqtree
 conda install -c bioconda iqtree
 
 # Optional, for short-locus and small-dataset methods
 # PAUP* (SVDQuartets): https://paup.phylosolutions.com/
-conda install -c bioconda bpp        # BPP (delimitation, full-likelihood)
+# BPP (delimitation, full-likelihood): not on bioconda; binaries at https://github.com/bpp/bpp/releases
 ```
 
 - Conceptual: a species tree is a distribution-of-genealogies problem, not one tree problem. Know your approximate ILS level (internode lengths in coalescent units, ancestral Ne) before choosing a method.
@@ -74,17 +74,17 @@ Tell your AI agent what you want to do:
 
 - A species tree is not a gene tree: treat the data as a distribution of genealogies, and expect discordance even with perfect data.
 - More loci do not rescue concatenation in the anomaly zone; they make the wrong tree more confident. Measure ILS first.
-- ASTRAL branch lengths are in coalescent units, not time or substitutions, and tip lengths are undefined; for dates use StarBEAST2 or divergence-dating.
+- Check branch-length units: wASTRAL and Java ASTRAL write coalescent units; ASTER `astral`/`astral-pro` default to substitution units (`--length CULength` for coalescent units). Neither is time; for dates use StarBEAST2 or divergence-dating.
 - localPP is a coalescent posterior, not a bootstrap. localPP = 1.0 is expected on resolved branches; localPP ~ 0.33 is a three-way tie.
 - Report gCF/sCF on every phylogenomic tree; bootstrap and localPP saturate at scale and hide the conflict that concordance factors expose.
-- Contract gene-tree branches below ~10% support before ASTRAL, or use wASTRAL, which weights continuously and generally beats hard contraction.
+- Contract gene-tree branches below ~10% standard-bootstrap support before ASTRAL (UFBoot rarely goes that low, so this does little on IQ-TREE `-B` trees), or use wASTRAL, which weights continuously and generally beats hard contraction.
 - Symmetric minority quartets (q2 ~ q3) mean ILS; asymmetric (q2 != q3, significant D / HyDe / QuIBL) mean introgression; confirm the asymmetry before invoking gene flow.
 - In ASTER `astral`, `-t` is threads and `-u` is annotation; in classic Java ASTRAL `-t` is the annotation level. Confirm which is installed before scripting.
 
 ## Related Skills
 
 - modern-tree-inference - per-locus ML gene trees (ASTRAL input) and gCF/sCF computation
-- bayesian-inference - full Bayesian co-estimation; StarBEAST2 for species tree plus dates
+- bayesian-inference - MCMC convergence and marginal-likelihood checks for full-Bayesian MSC runs (StarBEAST2 itself is set up in BEAST2/BEAUti, not covered there)
 - divergence-dating - turning a coalescent-unit species tree into a dated tree
 - tree-io - reading and writing the Newick gene-tree files ASTRAL consumes
 - comparative-genomics/ortholog-inference - single-copy vs multi-copy decision upstream (ASTRAL vs ASTRAL-Pro)

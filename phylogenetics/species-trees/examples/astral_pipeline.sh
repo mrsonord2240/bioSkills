@@ -17,14 +17,18 @@ CONTRACT_SUPPORT=10   # collapse gene-tree branches below 10% bootstrap to polyt
                       # continuous-weighting alternative that removes this threshold choice)
 THREADS=8
 SEED=12345
+# bioconda IQ-TREE 3 installs iqtree3 (and iqtree); IQ-TREE 2.x installs iqtree2
+IQTREE=$(command -v iqtree3 || command -v iqtree2 || command -v iqtree)
 
 mkdir -p "$OUTDIR"
 
 # --- Step 1: per-locus gene trees with support (one ML tree per locus) ---
-# -S runs IQ-TREE2 once per alignment in the directory; single concatenated treefile out.
-iqtree2 -S "$LOCI_DIR" -m MFP -B 1000 -T AUTO --prefix "$OUTDIR/loci" --seed "$SEED" --quiet
+# -S runs IQ-TREE once per alignment in the directory; single concatenated treefile out.
+"$IQTREE" -S "$LOCI_DIR" -m MFP -B 1000 -T AUTO --prefix "$OUTDIR/loci" --seed "$SEED" --quiet
 
 # --- Step 2: contract weak gene-tree branches to polytomies ---
+# The 10% cut-off is for standard bootstrap; on UFBoot (-B) labels it collapses almost nothing,
+# so wASTRAL (Step 3) is the main guard against gene-tree error.
 # ASTRAL-III handles polytomies correctly (they add no spurious quartet similarity).
 # nw_ed (Newick Utilities): 'i & b<=N' selects internal nodes with support <= N to collapse.
 if command -v nw_ed >/dev/null 2>&1; then
@@ -52,14 +56,16 @@ echo "ASTRAL species tree (localPP + q1/q2/q3): $OUTDIR/species_astral.tre"
 # A high-bootstrap branch with gCF ~ 25 is screaming disagreement the bootstrap hides.
 CONCAT="concat.fasta"
 if [ -f "$CONCAT" ]; then
-    iqtree2 -te "$OUTDIR/species_astral.tre" --gcf "$OUTDIR/gene_trees.nwk" \
-        -s "$CONCAT" --scfl 100 --prefix "$OUTDIR/cf"
-    echo "Concordance factors: $OUTDIR/cf.cf.stat (per-branch q1/q2/q3)"
-    echo "Annotated tree: $OUTDIR/cf.cf.tree"
+    # Two calls: IQ-TREE rejects --gcf together with --scfl
+    "$IQTREE" -t "$OUTDIR/species_astral.tre" --gcf "$OUTDIR/gene_trees.nwk" --prefix "$OUTDIR/cf_g"
+    "$IQTREE" -te "$OUTDIR/species_astral.tre" -s "$CONCAT" --scfl 100 --prefix "$OUTDIR/cf_s"
+    echo "Gene concordance: $OUTDIR/cf_g.cf.stat (per-branch gCF, gDF1, gDF2, gDFP)"
+    echo "Annotated trees: $OUTDIR/cf_g.cf.tree (gCF), $OUTDIR/cf_s.cf.tree (sCF)"
 else
     echo "Skipping concordance factors: $CONCAT not found"
     echo "Provide a concatenated alignment to compute gCF/sCF"
 fi
 
-echo "Pipeline complete. ASTRAL trees are UNROOTED; root with an outgroup, and remember"
-echo "branch lengths are in coalescent units (not time). Trust the coalescent topology on low-gCF branches."
+echo "Pipeline complete. ASTRAL trees are UNROOTED; root with an outgroup. Branch lengths: wASTRAL writes"
+echo "coalescent units; ASTER astral defaults to substitution units (--length CULength for coalescent units)."
+echo "Neither is time. Trust the coalescent topology on low-gCF branches."

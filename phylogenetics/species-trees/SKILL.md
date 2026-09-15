@@ -11,18 +11,18 @@ Reference examples tested with: ASTER 1.15+ (provides astral/ASTRAL-III, wastral
 
 Before using code patterns, verify installed versions match. If versions differ:
 - CLI: `astral --version` then `astral --help` to confirm flags
-- CLI: `iqtree2 --version` then `iqtree2 --help` to confirm flags
+- CLI: `iqtree3 --version` then `iqtree3 --help` to confirm flags (`iqtree2` on IQ-TREE 2.x)
 - CLI: PAUP* prints its version at startup; BPP reads a control file
 
 If code throws an error, introspect the installed version and adapt flags rather than retrying.
 
-The modern binary is `astral` from the ASTER package; input is a file of gene-tree Newick strings, one tree per line. The classic-Java ASTRAL uses `-t` for ANNOTATION level, but the ASTER `astral` uses `-t` for THREADS and `-u` for annotation -- copying a Java `-t 8` (quartet support) into ASTER silently requests 8 threads with no annotation. Confirm which interface is installed before scripting.
+The modern binary is `astral` from the ASTER package; input is a file of gene-tree Newick strings, one tree per line. The classic-Java ASTRAL uses `-t` for ANNOTATION level, but the ASTER `astral` uses `-t` for THREADS and `-u` for annotation -- copying a Java `-t 8` (quartet support) into ASTER silently requests 8 threads with only the default localPP annotation (no q1/q2/q3). Confirm which interface is installed before scripting.
 
 # Coalescent Species-Tree Estimation -- A Species Tree Is Not a Gene Tree, and Concatenation Is Inconsistent in the Anomaly Zone
 
 **"Estimate the species tree from my multi-locus phylogenomic data"** -> Treat the dataset as a distribution of genealogies, not one tree, and estimate the species tree most consistent with that distribution under the multispecies coalescent.
 - CLI: per-locus gene trees (modern-tree-inference) then `astral -i gene_trees.nwk -o species.tre` (ASTER)
-- CLI: gene and site concordance factors via `iqtree2 ... --gcf ... --scfl` (shared with modern-tree-inference)
+- CLI: gene and site concordance factors via `iqtree3 -t ... --gcf` and `iqtree3 -te ... --scfl` as two calls (shared with modern-tree-inference)
 
 Scope: choosing and running a coalescent species-tree method, contracting noisy gene trees, and reading discordance honestly. Per-locus gene-tree inference and model selection -> modern-tree-inference. Computing and plotting gCF/sCF -> modern-tree-inference, tree-visualization. Single-copy vs multi-copy orthology upstream -> comparative-genomics/ortholog-inference. Dated species trees -> divergence-dating. Rooting -> tree-manipulation.
 
@@ -78,9 +78,10 @@ Do not reflexively coalescent-everything: where ILS is low the two trees agree a
 
 ```bash
 # Per-locus gene trees with support live upstream in modern-tree-inference:
-#   iqtree2 -S loci_dir -m MFP -B 1000 -T AUTO --prefix loci   # one tree per locus
-# Contract gene-tree branches below 10% support (Newick tools / nw_ed) -> polytomies,
-# then concatenate into one file, one Newick per line:
+#   iqtree3 -S loci_dir -m MFP -B 1000 -T AUTO --prefix loci   # one tree per locus (iqtree2 on 2.x)
+# Contract gene-tree branches below 10% STANDARD bootstrap (Newick tools / nw_ed) -> polytomies.
+# With UFBoot (-B) labels this is nearly a no-op (UFBoot rarely falls below 10); use wASTRAL instead.
+# Then concatenate into one file, one Newick per line:
 #   cat loci/*.contracted.treefile > gene_trees.nwk
 
 # Primary estimate: wASTRAL weights quartets by gene-tree support+length (noisy gene trees)
@@ -91,11 +92,13 @@ astral -t 8 -i gene_trees.nwk -o species.tre 2> species.log     # -t 8 = 8 threa
 astral -u 2 -i gene_trees.nwk -o species_annot.tre              # full localPP + q1/q2/q3 for all 3 resolutions
 astral --root OUTGROUP -i gene_trees.nwk -o species_rooted.tre  # rooting improves branch-length estimation
 
-# Multi-copy gene families (no pre-orthology) -> ASTRAL-Pro:
-astral-pro -i family_trees.nwk -o species_pro.tre
+# Multi-copy gene families (no pre-orthology) -> ASTRAL-Pro, with a gene->species map:
+astral-pro -a gene2species.txt -i family_trees.nwk -o species_pro.tre
 ```
 
-ASTRAL returns an UNROOTED tree; root with an outgroup afterward. Branch lengths are in coalescent units (not time, not substitutions), and tip lengths are undefined in that mode. The classic Java `astral.5.7.8.jar` inverts the flags: there `-t` is the annotation level (`-t 2` full, `-t 8` quartet support, `-t 10` polytomy test) and there is no `-u`.
+`gene2species.txt` has one line per gene copy, `<gene name> <species name>` separated by a space or tab (e.g. `Sp_A_1	Sp_A`). Without `-a`, ASTRAL-Pro treats every distinct leaf name as a species: family trees with copies named `Sp_A_1`/`Sp_A_2` return a tree of gene copies, with exit 0 and no warning.
+
+ASTRAL returns an UNROOTED tree; root with an outgroup afterward. Branch-length units depend on the binary: ASTER `astral`/`astral-pro` (ASTRAL-IV / ASTRAL-Pro3) default to `--length SULength` (substitutions per site, tip lengths written); use `--length CULength` for coalescent units, or read `CULength` from the `-u 2` labels. `wastral` and classic Java ASTRAL write coalescent units with undefined tip lengths. Coalescent units are not time either. The classic Java `astral.5.7.8.jar` inverts the flags: there `-t` is the annotation level (`-t 2` full, `-t 8` quartet support, `-t 10` polytomy test) and there is no `-u`.
 
 ## Compute and Read Concordance Factors
 
@@ -105,11 +108,16 @@ ASTRAL returns an UNROOTED tree; root with an outgroup afterward. Branch lengths
 
 ```bash
 # gCF = % of decisive gene trees containing a branch; sCF = % of decisive sites supporting it
-iqtree2 -te species.tre --gcf gene_trees.nwk -s concat.fasta --scfl 100 --prefix cf   # -te fixes the topology for likelihood sCF
-# cf.cf.tree carries gCF/sCF on node labels; cf.cf.stat has per-branch q1/q2/q3 counts
+# Two calls: IQ-TREE rejects --gcf together with --scfl ("Do not specify --scf or --gcf with --scfl")
+iqtree3 -t species.tre --gcf gene_trees.nwk --prefix cf_g                     # gene concordance
+iqtree3 -te species.tre -s concat.fasta --scfl 100 --prefix cf_s              # likelihood sCF; -te fixes the topology
+# cf_g.cf.tree / cf_s.cf.tree carry gCF / sCF on node labels; cf_g.cf.stat has per-branch gCF, gDF1, gDF2, gDFP
+# (gene trees supporting the species split, the two alternative NNI resolutions, and paraphyly) -- not q1/q2/q3
 ```
 
-Then read each contested branch: under pure ILS the two minority topologies are equally probable (q2 ~ q3); introgression breaks that symmetry by inflating the one matching the direction of gene flow. A high-bootstrap branch with gCF ~ 25 is a branch where the data are screaming disagreement that the bootstrap hides.
+(`iqtree3` is the IQ-TREE 3 binary bioconda installs; on IQ-TREE 2.x use `iqtree2`. Split commands checked on IQ-TREE 2.4.0.)
+
+Then read each contested branch: under pure ILS the two minority topologies are equally probable (q2 ~ q3); introgression breaks that symmetry by inflating the one matching the direction of gene flow. `astral -u 2` labels give q1/q2/q3 but do not say which bipartition q2 and q3 are; `astral -u 3` also writes `freqQuad.csv`, which names the quartet topology behind each frequency. Test the asymmetry on the minority counts, e.g. a binomial test of f2 against f2 + f3 with p = 0.5 (gDF1 vs gDF2 from `cf_g.cf.stat` is the gene-tree-count analogue). A high-bootstrap branch with gCF ~ 25 is a branch where the data are screaming disagreement that the bootstrap hides.
 
 ## Interpreting Concordance and Discordance
 
@@ -136,7 +144,7 @@ Then read each contested branch: under pure ILS the two minority topologies are 
 **Trigger:** Rapid radiation with several short successive internodes, analyzed by supermatrix ML with "100% bootstrap" reported as resolution.
 **Mechanism:** Concatenation is inconsistent and positively misleading under high ILS; the plurality genealogy is anomalous, so adding loci converges on the wrong tree with rising support.
 **Symptom:** Rock-solid bootstrap but gCF < 33 on focal branches; concatenated and coalescent trees disagree exactly there.
-**Fix:** Use wASTRAL/ASTRAL (quartet-level consistency holds in the anomaly zone); report gCF/sCF; trust the coalescent topology on low-gCF branches; consider a true near-polytomy via the polytomy test.
+**Fix:** Use wASTRAL/ASTRAL (quartet-level consistency holds in the anomaly zone); report gCF/sCF; trust the coalescent topology on low-gCF branches; consider a true near-polytomy via the polytomy test. Consistency is asymptotic: deep in the zone (internodes ~0.01 coalescent units) the three quartet frequencies differ by about 1% and ASTRAL can also return the anomalous split even from thousands of error-free gene trees, but with low localPP and a non-rejected polytomy test -- there the deliverable is a supported near-polytomy, not a resolved topology.
 
 ### Ignoring Paralogy
 **Trigger:** Discarding all multi-copy families to feed single-copy ASTRAL, or treating paralogs as orthologs.
@@ -157,7 +165,7 @@ Then read each contested branch: under pure ILS the two minority topologies are 
 | Internode (coalescent units) | < ~1.0 | >25% of gene trees discordant; ILS material | P(concordant)=1-(2/3)e^(-tau) |
 | Internode (coalescent units) | < ~0.3 | ~50% discordant; coalescent method required | same |
 | Two+ successive internodes | both < ~0.1-0.2 | Anomaly-zone risk; concatenation positively misleading | Degnan and Rosenberg 2006 |
-| Gene-tree branch support to contract before ASTRAL | < ~10% bootstrap (or use wASTRAL) | Collapse to polytomy to cut gene-tree-error bias | ASTRAL practice / Zhang and Mirarab 2022 |
+| Gene-tree branch support to contract before ASTRAL | < ~10% standard bootstrap (not UFBoot; or use wASTRAL) | Collapse to polytomy to cut gene-tree-error bias | ASTRAL practice / Zhang and Mirarab 2022 |
 | gCF | < 50 | Most loci disagree; distrust concatenation here | Minh 2020 |
 | gCF | < 33 | Near the ILS coin-flip floor; effectively unresolved | Minh 2020 |
 | sCF | ~33 | Random-resolution floor (three quartet resolutions); no site signal | Minh 2020 |
@@ -171,10 +179,11 @@ The gCF/sCF cutoffs of 50/33 are practical heuristics relative to the dataset (a
 
 | Error / symptom | Cause | Solution |
 |-----------------|-------|----------|
-| ASTER `astral` ignores the annotation flag | Used Java `-t 8` (annotation); ASTER `-t` is threads | Use `-u 2` in ASTER; `-t 8` only in classic Java |
+| ASTER `astral` gives localPP but no q1/q2/q3 | Used Java `-t 8` (annotation); ASTER `-t` is threads | Use `-u 2` in ASTER; `-t 8` only in classic Java |
 | Coalescent tree worse than concatenation | Noisy gene trees fed in as truth | Contract <10% branches; use wASTRAL; or SVDQuartets |
 | localPP = 1.0 reported as bootstrap | localPP is a coalescent posterior on its own scale | Report gCF/sCF; do not apply a BS cutoff |
-| Coalescent-unit branch read as time | Branch lengths are coalescent units, tips undefined | State units; for dates use StarBEAST2 / divergence-dating |
+| Substitution-unit branch read as coalescent units, or either read as time | ASTER `astral` defaults to `SULength`; `--length CULength` gives coalescent units | State units; for dates use StarBEAST2 / divergence-dating |
+| `iqtree ... --gcf ... --scfl` exits "Do not specify --scf or --gcf with --scfl" | gCF and likelihood sCF cannot share one call | Run `-t ... --gcf` and `-te ... --scfl` as two calls |
 | High bootstrap, low gCF, called resolved | Concatenation in the anomaly zone | Run coalescent; trust it on low-gCF branches; polytomy test |
 | Most gene families dropped | Forced single-copy orthology | Use ASTRAL-Pro on multi-copy family trees |
 | Network claimed from any discordance | ILS also produces discordance | Confirm q2 != q3 (D / HyDe / QuIBL) before invoking gene flow |
@@ -202,7 +211,7 @@ Edelman NB, Frandsen PB, Miyagi M, et al. 2019. Genomic architecture and introgr
 ## Related Skills
 
 - modern-tree-inference - per-locus ML gene trees (ASTRAL input) and gCF/sCF computation
-- bayesian-inference - full Bayesian co-estimation; StarBEAST2 for species tree plus dates
+- bayesian-inference - MCMC convergence and marginal-likelihood checks for full-Bayesian MSC runs (StarBEAST2 itself is not covered there; it is a BEAST2 package, set up via BEAUti)
 - divergence-dating - turning a coalescent-unit species tree into a dated tree
 - tree-io - reading and writing the Newick gene-tree files ASTRAL consumes
 - comparative-genomics/ortholog-inference - single-copy vs multi-copy decision upstream (ASTRAL vs ASTRAL-Pro)
