@@ -7,7 +7,7 @@ primary_tool: pyOpenMS
 
 ## Version Compatibility
 
-Reference examples tested with: pyOpenMS 3.1+, pandas 2.2+
+Reference examples tested with: pyOpenMS 3.5.0, pandas 2.2+
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -16,13 +16,13 @@ Before using code patterns, verify installed versions match. If versions differ:
 If code throws ImportError, AttributeError, or TypeError, introspect the installed
 package and adapt the example to match the actual API rather than retrying.
 
-The pyOpenMS protein-inference class names have varied across releases. Confirm the exact spelling at the installed version with `help(pyopenms.EpifanyAlgorithm)` and `help(pyopenms.BasicProteinInferenceAlgorithm)` before relying on the reference code.
+In pyOpenMS the EPIFANY class is `BayesianProteinInferenceAlgorithm` (there is no `EpifanyAlgorithm`; the TOPP tool is `Epifany`). From 3.5, peptide IDs must be a `PeptideIdentificationList`, and `ProteinGroup.accessions` come back as bytes.
 
 # Protein Inference -- A Chosen Explanation of Peptide Evidence, Reported as Groups
 
 **"Tell me which proteins are present from my identified peptides"** -> Assign the observed peptides to a minimal or probability-weighted set of proteins, reported as groups of indistinguishable proteins with a leading accession -- because bottom-up MS measures peptides, and the protein set behind them is inferred, not observed.
-- Python: `pyopenms.BasicProteinInferenceAlgorithm().run(peptide_ids, protein_ids)` for parsimony grouping
-- Python: `pyopenms.EpifanyAlgorithm` (TOPP tool `Epifany`) for Bayesian belief-propagation inference
+- Python: `pyopenms.BasicProteinInferenceAlgorithm().run(peptide_ids, protein_ids)` for score-aggregation inference; set `greedy_group_resolution` to resolve shared peptides parsimony-style
+- Python: `pyopenms.BayesianProteinInferenceAlgorithm` (TOPP tool `Epifany`) for Bayesian belief-propagation inference
 - CLI: `ProteinProphet` (TPP) for EM-based probabilistic inference; `Philosopher filter` for FragPipe FDR
 
 Scope: this skill OWNS peptide-to-protein grouping, the indistinguishable/subsumable distinction, the leading-protein convention, inference-method choice, and protein/protein-group FDR. PSM-level and peptide-level FDR plus the search engines that produce the peptide list -> peptide-identification. The quantitative fallout of razor vs unique peptides on protein abundance -> quantification. OUT OF SCOPE: resolving splice isoforms, single-AA variants, or PTM-defined proteoforms (bottom-up groups cannot separate them; that is top-down / proteoform work).
@@ -31,9 +31,9 @@ Scope: this skill OWNS peptide-to-protein grouping, the indistinguishable/subsum
 
 1. **The protein set is not uniquely recoverable from peptides, so a protein group -- not a flat protein list -- is the only honest reporting unit.** Many peptides are shared across paralogs, gene families, and isoforms, so distinct protein sets can explain the same peptide evidence equally well. The inference picks ONE explanation under an assumption (parsimony, or a probability model); proteins that the observed peptides cannot tell apart (indistinguishable) MUST be reported as one group with a designated leading protein. A flat list double-counts indistinguishable proteins and breaks target/decoy symmetry at the protein level, silently corrupting FDR.
 
-2. **Protein FDR is its own estimation problem that INFLATES on large data; the fix is PICKED FDR, not the PSM formula reused.** Controlling PSM-FDR at 1% does not give 1% protein-FDR. A deep run has many false PSMs in absolute terms, and each can nucleate a one-hit-wonder false protein; because true proteins accumulate many peptides while false proteins are hit once, the naive protein-FDR balloons to 10-30% on deep datasets. Savitski 2015 picked-protein FDR pairs each target protein with its decoy and keeps only the higher-scoring of the pair before counting, removing the target/decoy asymmetry; The & Kall 2016 extends this to the group level (picked-group FDR), which is required because parsimony grouping is anticonservative otherwise.
+2. **Protein FDR is its own estimation problem; estimate it at the protein level with PICKED FDR.** Controlling PSM-FDR at 1% does not give 1% protein-FDR: a deep run has many false PSMs in absolute terms, each can nucleate a one-hit-wonder false protein, and with NO protein-level estimate the protein list can be 10-30% false. The classic (non-picked) protein-level target-decoy count errs the other way on large data: decoy proteins accumulate random hits faster than false targets, so it OVER-estimates FDR and discards real proteins. Savitski 2015 picked-protein FDR pairs each target protein with its decoy and keeps only the higher-scoring of the pair before counting, which removes that bias. Picked-group FDR (The, Samaras, Kuster & Wilhelm 2022) applies picking to protein groups, and also shows that naive Occam/parsimony-style grouping can be anticonservative on large data. Subsumable proteins must be removed before groups are counted, or they inflate the target list (synthetic test: 8.6% true FDP at nominal 1% without resolution, 0.9% with it).
 
-3. **The two-peptide rule is wrong -- it increases protein FDR and discards real proteins.** Requiring >=2 peptides per protein (Gupta & Pevzner 2009, "A strike against the two-peptide rule") removes MORE target proteins than decoy proteins, so it raises protein-level FDR rather than lowering it, while throwing away legitimate low-abundance single-peptide IDs. Replace the blanket rule with: control protein-level (picked) FDR, then judge single-peptide IDs by their score, not their peptide count.
+3. **Do not use the two-peptide rule -- it discards real proteins, and it is not an FDR control.** Requiring >=2 peptides per protein (Gupta & Pevzner 2009, "A strike against the two-peptide rule") throws away legitimate low-abundance single-peptide IDs. Its effect on protein FDR depends on the PSM threshold: Gupta & Pevzner found it raised FDR, while under a strict 1% PSM pre-filter it can lower it at the cost of many true proteins. Replace the blanket rule with: control protein-level (picked) FDR, then judge single-peptide IDs by their score, not their peptide count.
 
 ## Vocabulary the Rest of This Depends On
 
@@ -48,40 +48,44 @@ Scope: this skill OWNS peptide-to-protein grouping, the indistinguishable/subsum
 
 | Tool / method | Citation | Mechanism / role | When |
 |---------------|----------|------------------|------|
-| Parsimony (Occam) | -- | Greedy minimal protein set explaining all peptides | Fast default; ties broken arbitrarily; anticonservative group-FDR on large data unless picked |
+| Parsimony (Occam) | -- | Greedy minimal protein set explaining all peptides | Fast default; ties broken arbitrarily; can be anticonservative for group FDR on large data (The 2022) |
+| Score aggregation (OpenMS `BasicProteinInferenceAlgorithm`) | -- | Aggregates peptide scores for EVERY protein; `greedy_group_resolution` adds razor-style resolution | Not parsimony by default: subsumable and shared-only proteins stay as groups unless `greedy_group_resolution='true'` |
 | ProteinProphet | Nesvizhskii 2003 | EM APPORTIONS shared peptides across candidate proteins, weighted by other evidence | TPP / FragPipe pipelines; the classic probabilistic standard |
 | EPIFANY | Pfeuffer 2020 | Bayesian network over the peptide-protein graph, loopy belief propagation + convolution trees | OpenMS-recommended modern inference; strong at controlled protein-group FDR |
 | Fido | -- | Bayesian generative model (Percolator `--protein`) | Percolator pipelines; superseded by picked-protein for FDR |
 | Razor peptide | -- | Shared peptide assigned winner-take-all to the group with most evidence (MaxQuant) | MaxQuant default; ID-fine but distorts QUANT (route to quantification) |
 | Picked-protein FDR | Savitski 2015 | Pair target with its decoy, keep the higher-scoring of the pair, then count decoys | Protein-level FDR on any non-trivial dataset |
-| Picked-group FDR | The & Kall 2016 | Picking applied at the protein-GROUP level | When the inference unit is the group (the correct unit on deep data) |
+| Picked-group FDR | The 2022 | Picking applied at the protein-GROUP level | When the inference unit is the group (the correct unit on deep data) |
 | All-proteins / inclusive | -- | Report every protein any peptide could come from | Almost never; massive false-positive protein inflation |
 
 ## Decision Tree by Scenario
 
 | Scenario | Recommended | Why |
 |----------|-------------|-----|
-| Standard DDA run, OpenMS-based pipeline | `EpifanyAlgorithm` (or `BasicProteinInferenceAlgorithm` for parsimony) + picked-group FDR | Modern, group-FDR aware; well-calibrated on benchmarks |
-| MaxQuant output (`proteinGroups.txt`) | Parse groups as-is; quantify on UNIQUE peptides | Groups already inferred; razor quant is the trap, not the inference |
+| Standard DDA run, OpenMS-based pipeline | `BayesianProteinInferenceAlgorithm` (EPIFANY) or `BasicProteinInferenceAlgorithm` with `greedy_group_resolution='true'` + picked-group FDR | Group-FDR aware; Basic without greedy resolution keeps subsumable proteins as groups |
+| MaxQuant output (`proteinGroups.txt`) | Parse groups as-is; drop `Reverse` (`+`, accessions `REV__`), `Potential contaminant` and `Only identified by site` rows; quantify on UNIQUE peptides | Groups already inferred; `Protein IDs` = all members, `Majority protein IDs` = members with at least half the group's peptides, first = leading; `Unique peptides` = unique to the GROUP, not to one protein |
 | FragPipe / TPP pipeline | ProteinProphet inference + Philosopher/Philosopher-style FDR filtering | Native EM apportionment + 2-level FDR |
-| Deep dataset (many thousands of proteins) | Picked-GROUP FDR, NOT naive decoy/target | Naive protein-FDR inflates to 10-30% from one-hit-wonders |
+| Deep dataset (many thousands of proteins) | Picked-GROUP FDR on resolved groups | No protein-level FDR leaves 10-30% false proteins; the non-picked count over-estimates FDR and loses proteins |
 | Sensitive differential abundance downstream | Quantify on unique peptides only -> quantification | Razor assignment can flip between conditions and fake DE |
 | Want isoform-level answers | Stop -- route to top-down / proteoform methods | Bottom-up groups cannot resolve proteoforms |
 | Few PSMs (single-protein pulldown) | Report evidence, do not trust a "0% protein FDR" | Target-decoy FDR is meaningless at tiny counts |
 
-Default when uncertain: run parsimony grouping (`BasicProteinInferenceAlgorithm` with `annotate_indistinguishable_groups`), report protein GROUPS with a leading accession, and control protein-GROUP FDR with picked-group FDR at 1%. Do NOT impose a two-peptide rule.
+Default when uncertain: run `BasicProteinInferenceAlgorithm` with `annotate_indistinguishable_groups` and `greedy_group_resolution` on, report protein GROUPS with a leading accession, and control protein-GROUP FDR with picked-group FDR at 1%. Do NOT impose a two-peptide rule.
 
-### Group Proteins by Parsimony with pyOpenMS
+**Input contract:** protein FDR needs decoys, so the upstream PSM/peptide filter must KEEP the decoy hits that pass it. Know the score orientation: PEP is lower-better, posterior probability and the group probability written by these algorithms are higher-better.
+
+### Group Proteins with pyOpenMS (aggregation + greedy resolution)
 
 **Goal:** Turn an FDR-filtered peptide identification list into protein groups with a leading protein, resolving shared-peptide ambiguity.
 
-**Approach:** Load the idXML from peptide identification, run the parsimony algorithm with indistinguishable-group annotation on, then read the inferred groups off the protein identification run.
+**Approach:** Load the idXML from peptide identification, run `BasicProteinInferenceAlgorithm` (score aggregation per protein) with indistinguishable-group annotation AND greedy group resolution on -- without resolution, subsumable and shared-only proteins stay as their own groups -- then read the groups off the protein identification run and apply picked protein-group FDR with the built-in.
 
 ```python
-from pyopenms import IdXMLFile, BasicProteinInferenceAlgorithm
+from pyopenms import (IdXMLFile, BasicProteinInferenceAlgorithm, PeptideIdentificationList,
+                      FalseDiscoveryRate, String)
 
 protein_ids = []
-peptide_ids = []
+peptide_ids = PeptideIdentificationList()   # pyOpenMS 3.5+: a plain [] fails
 # protein_ids is FIRST in both load() and store() for IdXMLFile
 IdXMLFile().load('peptides_1pct_fdr.idXML', protein_ids, peptide_ids)
 
@@ -89,53 +93,59 @@ inference = BasicProteinInferenceAlgorithm()
 params = inference.getParameters()
 # annotate_indistinguishable_groups reports indistinguishable proteins as ONE group
 params.setValue('annotate_indistinguishable_groups', 'true')
+# greedy_group_resolution assigns shared peptides to the best group, so subsumable proteins drop out
+params.setValue('greedy_group_resolution', 'true')
 inference.setParameters(params)
 inference.run(peptide_ids, protein_ids)
 
-# indistinguishable groups live on the protein identification run
-for prot_id in protein_ids:
-    for group in prot_id.getIndistinguishableProteins():
-        leading = group.accessions[0]  # convention: highest-evidence accession first
-        print(leading, group.probability, list(group.accessions))
+# picked protein-group FDR: (decoy string, is prefix, groups too); group.probability becomes a q-value
+FalseDiscoveryRate().applyPickedProteinFDR(protein_ids[0], String('DECOY_'), True, True)
+
+for group in protein_ids[0].getIndistinguishableProteins():
+    accs = [a.decode() for a in group.accessions]   # bytes; pyOpenMS sorts them alphabetically
+    if all(a.startswith('DECOY_') for a in accs) or group.probability > 0.01:
+        continue
+    # members share the same evidence; choose the lead explicitly: canonical (no -N isoform suffix) first
+    leading = sorted(accs, key=lambda a: ('-' in a, a))[0]
+    print(leading, group.probability, accs)
 ```
 
 ### Bayesian Inference + Group FDR with EPIFANY
 
 **Goal:** Assign calibrated protein/group posteriors and control protein-group FDR with a probability model rather than greedy parsimony.
 
-**Approach:** EPIFANY consumes idXML whose PSMs already carry posterior error probabilities (from Percolator or IDPosteriorErrorProbability), then propagates belief over the peptide-protein graph. The TOPP tool is reliably named `Epifany`; the pyOpenMS class spelling has varied across releases, so introspect first.
+**Approach:** EPIFANY consumes idXML whose PSMs already carry posterior error probabilities (from Percolator or IDPosteriorErrorProbability), then propagates belief over the peptide-protein graph. The TOPP tool is `Epifany`; the pyOpenMS class is `BayesianProteinInferenceAlgorithm`.
 
 ```python
-import pyopenms
-from pyopenms import IdXMLFile
-
-# CONFIRM the class name at the installed version before use:
-#   help(pyopenms.EpifanyAlgorithm)
-algo_cls = getattr(pyopenms, 'EpifanyAlgorithm')
+from pyopenms import IdXMLFile, BayesianProteinInferenceAlgorithm, PeptideIdentificationList
 
 protein_ids = []
-peptide_ids = []
+peptide_ids = PeptideIdentificationList()
 IdXMLFile().load('peptides_with_pep.idXML', protein_ids, peptide_ids)
 
-algo = algo_cls()
-# EPIFANY expects PSM posteriors as input; greedy_group_resolution controls
-# whether shared peptides are razor-resolved after inference
+algo = BayesianProteinInferenceAlgorithm()
+# EPIFANY expects PSM posteriors as input; the third argument (greedy_group_resolution)
+# controls whether shared peptides are razor-resolved after inference
 algo.inferPosteriorProbabilities(protein_ids, peptide_ids, False)
 
-for prot_id in protein_ids:
-    for group in prot_id.getIndistinguishableProteins():
-        print(group.accessions[0], group.probability)
+for group in protein_ids[0].getIndistinguishableProteins():
+    print([a.decode() for a in group.accessions], group.probability)   # higher = more likely present
 ```
 
 ### Picked Protein-Group FDR
 
 **Goal:** Estimate protein-group FDR without the inflation that the reused PSM formula causes on large data.
 
-**Approach:** For each target group, find its decoy counterpart (same accessions with the decoy prefix); keep only the higher-scoring member of each target/decoy PAIR; rank the picked set and count decoys as the FDR estimate. This is the operation the reference example demonstrates end to end.
+**Approach:** For each target group, find its decoy counterpart (same accessions with the decoy prefix); keep only the higher-scoring member of each target/decoy PAIR; rank the picked set and count decoys as the FDR estimate. For idXML, prefer the built-in `FalseDiscoveryRate().applyPickedProteinFDR(prot_id, String(prefix), True, True)` shown above; for group-level work on large data, the kusterlab `picked_group_fdr` package implements The 2022. The sketch below pairs by the exact accession set, so decoy groups whose membership differs from their target's stay unpaired and are counted unpicked. The decoy prefix is tool-specific (`DECOY_` OpenMS/FragPipe `rev_`, MaxQuant `REV__`) and must be passed explicitly; a wrong prefix silently counts decoys as targets.
 
 ```python
-def picked_group_fdr(groups, decoy_prefix='DECOY_'):
-    # groups: list of dicts with 'accessions', 'score', 'is_decoy'
+def picked_group_fdr(groups, decoy_prefix, min_decoys=10):
+    # groups: list of dicts with 'accessions' (str), 'score' (higher = better), 'is_decoy'
+    n_decoy = sum(g['is_decoy'] for g in groups)
+    if n_decoy == 0 or not any(a.startswith(decoy_prefix) for g in groups for a in g['accessions']):
+        raise ValueError(f'no decoy groups with prefix {decoy_prefix!r}; keep decoys upstream or fix the prefix')
+    if n_decoy < min_decoys:
+        print(f'WARNING: only {n_decoy} decoy groups; the protein FDR estimate is not meaningful')
     by_base = {}
     for g in groups:
         base = frozenset(a.replace(decoy_prefix, '') for a in g['accessions'])
@@ -161,15 +171,15 @@ def picked_group_fdr(groups, decoy_prefix='DECOY_'):
 ## Per-Method Failure Modes
 
 ### Naive (non-picked) protein/group FDR
-**Trigger:** Reusing the PSM-level `decoys/targets` formula at the protein level on a deep dataset.
-**Mechanism:** False target proteins (one-hit-wonders) and decoy proteins are not symmetric once peptides are mapped to proteins; true proteins absorb many peptides, false ones do not.
-**Symptom:** Reported 1% protein FDR, actual 10-30%; reviewer or entrapment check exposes it.
-**Fix:** Picked-protein FDR (Savitski 2015) or picked-group FDR (The & Kall 2016); validate with a two-species or entrapment search.
+**Trigger:** (a) No protein-level FDR at all ("1% PSM FDR is enough"); (b) the classic protein-level `decoys/targets` count without picking on a deep dataset; (c) picked FDR on unresolved groups.
+**Mechanism:** (a) false PSMs nucleate one-hit-wonder false proteins that no protein-level estimate catches; (b) decoy proteins keep accumulating random hits while true targets saturate, so decoys are over-counted; (c) subsumable and shared-only proteins count as extra target groups.
+**Symptom:** (a) protein list 10-30% false; (b) FDR over-estimated, real proteins lost (conservative, not anticonservative); (c) nominal 1% with several-fold higher true FDP.
+**Fix:** Picked-protein FDR (Savitski 2015) or picked-group FDR (The 2022) on resolved groups; validate with a two-species or entrapment search.
 
 ### Two-peptide rule
 **Trigger:** Filtering to proteins with >=2 (unique) peptides "for confidence".
-**Mechanism:** The rule removes more target proteins than decoy proteins, inverting the FDR effect, and deletes real low-abundance single-peptide proteins.
-**Symptom:** Fewer proteins AND higher true FDR than picked FDR at the same nominal cutoff.
+**Mechanism:** The rule deletes real low-abundance single-peptide proteins; its FDR effect depends on the PSM threshold (Gupta & Pevzner found it raised FDR; after a strict 1% PSM filter it can lower it while still deleting hundreds of true proteins).
+**Symptom:** Fewer proteins than picked FDR at the same nominal cutoff, with no calibrated error rate.
 **Fix:** Drop the rule; control picked protein-level FDR and score single-peptide IDs individually.
 
 ### Razor-peptide quantification
@@ -195,19 +205,22 @@ def picked_group_fdr(groups, decoy_prefix='DECOY_'):
 | Threshold | Source | Rationale |
 |-----------|--------|-----------|
 | Protein / protein-group FDR 1% (sometimes 5% for discovery) | community standard | SEPARATE estimation from PSM FDR; never assume 1% PSM implies 1% protein |
-| Picked FDR (target/decoy pairing) | Savitski 2015; The & Kall 2016 | Removes target/decoy asymmetry; dataset-size-independent, unlike naive decoy/target |
+| Picked FDR (target/decoy pairing) | Savitski 2015; The 2022 | Removes target/decoy asymmetry; dataset-size-independent, unlike naive decoy/target |
 | Decoy:target ratio 1:1 | community standard | Standard null; unequal ratios require formula correction |
 | Min PSMs for trustworthy protein FDR | hundreds+ | Below ~100s of items decoy counts are too noisy; "0% FDR" from zero decoys is luck, not control |
-| Two-peptide rule | DO NOT USE (Gupta & Pevzner 2009) | Increases protein FDR and drops real proteins; replaced by picked FDR + per-ID score |
+| Two-peptide rule | DO NOT USE (Gupta & Pevzner 2009) | Drops real proteins; FDR effect depends on the PSM threshold; replaced by picked FDR + per-ID score |
 | Single-peptide IDs | judge by score, not count | A high-confidence unique peptide can be a legitimate ID |
 
 ## Common Errors
 
 | Error / symptom | Cause | Solution |
 |-----------------|-------|----------|
-| Protein FDR much higher than nominal on deep data | Naive decoy/target reused from PSM level | Picked-protein or picked-group FDR |
-| Real low-abundance proteins missing | Two-peptide rule applied | Remove the rule; control picked FDR |
-| AttributeError on `EpifanyAlgorithm` / `infer_proteins` | Class name varies by version; the R `ProteinInference::infer_proteins` could not be confirmed to exist | `help(pyopenms.EpifanyAlgorithm)` to find the real name; use pyOpenMS, not an unverified R package |
+| Protein FDR much higher than nominal on deep data | No protein-level estimate, or groups not resolved (Basic without `greedy_group_resolution`) | Resolve groups, then picked-protein or picked-group FDR |
+| Real low-abundance proteins missing | Two-peptide rule applied, or non-picked protein FDR (conservative) | Remove the rule; control picked FDR |
+| `AttributeError: module 'pyopenms' has no attribute 'EpifanyAlgorithm'` | The pyOpenMS class is named differently; the R `ProteinInference::infer_proteins` could not be confirmed to exist | Use `pyopenms.BayesianProteinInferenceAlgorithm`; use pyOpenMS, not an unverified R package |
+| `Exception: can not handle type of (..., [], [])` on `IdXMLFile().load` | pyOpenMS 3.5+ needs a `PeptideIdentificationList` | `peptide_ids = PeptideIdentificationList()` |
+| `TypeError: a bytes-like object is required, not 'str'` on group accessions | `ProteinGroup.accessions` are bytes | `[a.decode() for a in group.accessions]` |
+| MaxQuant decoys counted as targets | Default `DECOY_` prefix; MaxQuant uses `REV__` | Pass the tool's decoy prefix explicitly |
 | Indistinguishable proteins reported as separate IDs | Flat protein list instead of groups | Enable `annotate_indistinguishable_groups`; report groups with a leading protein |
 | Spurious DE on paralog-sharing proteins | Razor-peptide quant flipped between conditions | Quantify on unique peptides -> quantification |
 | "Unique" peptide count changed when DB changed | Uniqueness is database-relative | Fix and document the database (isoforms, contaminants, decoys) |
@@ -218,6 +231,7 @@ def picked_group_fdr(groups, decoy_prefix='DECOY_'):
 - Gupta, N. & Pevzner, P.A. (2009). False discovery rates of protein identifications: a strike against the two-peptide rule. *Journal of Proteome Research* 8(9):4173-4181.
 - Savitski, M.M., Wilhelm, M., Hahne, H., Kuster, B. & Bantscheff, M. (2015). A scalable approach for protein false discovery rate estimation in large proteomic data sets. *Molecular & Cellular Proteomics* 14(9):2394-2404.
 - The, M., Tasnim, A. & Kall, L. (2016). How to talk about protein-level false discovery rates in shotgun proteomics. *Proteomics* 16(18):2461-2469.
+- The, M., Samaras, P., Kuster, B. & Wilhelm, M. (2022). Reanalysis of ProteomicsDB using an accurate, sensitive, and scalable false discovery rate estimation approach for protein groups. *Molecular & Cellular Proteomics* 21(12):100437.
 - Pfeuffer, J., Sachsenberg, T., Dijkstra, T.M.H., Serang, O., Reinert, K. & Kohlbacher, O. (2020). EPIFANY: a method for efficient high-confidence protein inference. *Journal of Proteome Research* 19(3):1060-1072.
 
 ## Related Skills

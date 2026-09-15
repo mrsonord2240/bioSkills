@@ -6,7 +6,7 @@ Protein inference decides which proteins are present from identified peptides. I
 ## Prerequisites
 ```bash
 pip install pyopenms pandas
-# CLI alternatives: ProteinProphet (TPP), Epifany (OpenMS), Philosopher (FragPipe)
+# CLI alternatives: ProteinProphet (TPP), Epifany (OpenMS; pyOpenMS class BayesianProteinInferenceAlgorithm), Philosopher (FragPipe)
 ```
 
 ## Quick Start
@@ -55,8 +55,8 @@ Tell your AI agent what you want to do:
 
 ## Tips
 - Report protein groups with a leading protein, never a flat protein list -- a flat list double-counts indistinguishable proteins and breaks protein-level FDR.
-- Protein FDR is a separate estimation problem from peptide FDR and inflates on large data; use picked-group FDR (Savitski 2015; The & Kall 2016).
-- Do not impose a two-peptide rule -- it raises protein FDR and discards real single-peptide proteins (Gupta & Pevzner 2009).
+- Protein FDR is a separate estimation problem from peptide FDR; skipping it leaves many false proteins on large data, and the non-picked count over-estimates it. Use picked-protein or picked-group FDR (Savitski 2015; The et al. 2022) on resolved groups.
+- Do not impose a two-peptide rule -- it discards real single-peptide proteins, and its FDR effect depends on the PSM threshold (Gupta & Pevzner 2009).
 - "Unique" is database-relative; a peptide unique against SwissProt may be shared once isoforms and TrEMBL are added. Fix and document the database.
 - For sensitive differential abundance, quantify on unique peptides only; razor assignment can flip between conditions and fake DE.
 - A protein group is not a proteoform -- do not claim a specific isoform from shared-peptide evidence.
