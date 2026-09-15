@@ -10,13 +10,13 @@ primary_tool: BEAST2
 Reference examples tested with: BEAST2 2.7+, MCMCTree/PAML 4.10+, TreePL 1.0+, TempEst 1.5+, LSD2 (IQ-TREE 2.2+ `--date`).
 
 Before using code patterns, verify installed versions match. If versions differ:
-- CLI: `beast -version`, `mcmctree` (PAML), `treePL`, `iqtree2 --version` then the tool's `-help`/`--help` to confirm flags
+- CLI: `beast -version`, `mcmctree` (PAML), `treePL`, `iqtree3 --version` (`iqtree2` on IQ-TREE 2.x) then the tool's `-help`/`--help` to confirm flags
 - Python: `pip show biopython dendropy` then `help(module.function)` to check signatures
 
 If code throws ImportError, AttributeError, or TypeError, introspect the installed
 package and adapt the example to match the actual API rather than retrying.
 
-BEAST2 prior-only is `sampleFromPrior="true"`; the MCMCTree equivalent is `usedata = 0`. MCMCTree calibration syntax is `B()/L()/U()` in the tree file, not `>`/`<`. FBD tip-dating needs the BEAST2 SA package.
+BEAST2 prior-only is `sampleFromPrior="true"`; the MCMCTree equivalent is `usedata = 0`. MCMCTree calibration syntax: prefer `B()/L()/U()` in the tree file (`>`/`<` was mis-parsed only in PAML 4.9b-4.9d). FBD tip-dating needs the BEAST2 SA package.
 
 # Divergence Time Estimation -- A Date Is Mostly the Calibration Prior, Not the Sequence
 
@@ -47,7 +47,7 @@ The clock governs how substitution rate varies across branches; choosing it wron
 | Autocorrelated (ACLN) | descendant rate centered on parent (Brownian log-rate; Thorne et al. 1998) | deep trees where rate is heritable (generation time, metabolism); MCMCTree default | rate-variance `sigma2` (MCMCTree) |
 | Random local clocks | a few inferred, discrete rate-shift points | episodic / clade-specific rate shifts (Drummond and Suchard 2010) | estimates where and how many shifts |
 
-Relaxed-clock work was established by Drummond et al. 2006 (uncorrelated relaxed clocks, "dating with confidence"). The single most useful BEAST2 relaxed-clock diagnostic is the coefficient of variation (CoV) of branch rates, derived from `ucld.stdev`: a CoV posterior abutting 0 (`ucld.stdev` near 0) means rates are effectively constant and a strict clock suffices (gain precision by simplifying); a CoV clearly above 0 with 0 excluded means the relaxed clock is doing necessary work and a strict clock would be falsely precise. If the `ucld.stdev` posterior just recovers its prior, the data cannot indicate how clocklike the lineages are -- report that. Use the CoV for a quick read, but decide strict-vs-relaxed formally by marginal-likelihood comparison (path sampling / stepping-stone).
+Relaxed-clock work was established by Drummond et al. 2006 (uncorrelated relaxed clocks, "dating with confidence"). The single most useful BEAST2 relaxed-clock diagnostic is the coefficient of variation (CoV) of branch rates, derived from `ucld.stdev`: a CoV posterior abutting 0 (`ucld.stdev` near 0) means rates are effectively constant and a strict clock suffices (gain precision by simplifying); a CoV clearly above 0 with 0 excluded means the relaxed clock is doing necessary work and a strict clock would be falsely precise. If the `ucld.stdev` posterior just recovers its prior, the data cannot indicate how clocklike the lineages are -- report that. Use the CoV for a quick read, but decide strict-vs-relaxed formally by marginal-likelihood comparison (path sampling / stepping-stone; in BEAST2 the MODEL_SELECTION package's PathSampler -- see bayesian-inference for the estimator and Bayes-factor scale).
 
 ## Calibration Strategy
 
@@ -94,20 +94,39 @@ When samples are collected at different times and the population evolves fast en
 beast -seed 1 -prefix prioronly prioronly.xml      # effective prior on every node
 beast -seed 1 -prefix withdata  withdata.xml       # full posterior
 
-# MCMCTree: usedata=0 gives the effective prior; usedata=2 the approx-likelihood posterior
+# MCMCTree (each run in its own directory): usedata=0 gives the effective prior;
+# usedata=3 writes out.BV; copy it to in.BV; usedata=2 is the approx-likelihood posterior
 mcmctree mcmctree_prior.ctl    # control file has usedata = 0
-mcmctree mcmctree_post.ctl     # control file has usedata = 2
+mcmctree mcmctree_bv.ctl       # control file has usedata = 3  -> out.BV
+cp out.BV ../post/in.BV
+mcmctree mcmctree_post.ctl     # control file has usedata = 2 in.BV  (PAML 4.10.10: bare "usedata = 2" exits "file name empty.")
 ```
+
+PAML 4.10 control-file details (checked on 4.10.10): `BDparas` needs a trailing flag (`BDparas = 1 1 0.1 m`; `m` multiplicative, `c` conditional), and the tree file needs an `ntaxa ntree` header line (e.g. `8 1`) before the calibrated Newick.
+
+TreeAnnotator writes node ages and HPDs into `[&height_median=...,height_95%_HPD={lo,hi}]` comments; Bio.Phylo leaves them in `clade.comment` (`clade.confidence` is None) and node order differs between trees with different topologies, so match clades by tip set:
 
 ```python
+import re
 from Bio import Phylo
 
-prior = Phylo.read('prioronly.mcc.tree', 'nexus')   # effective prior summary
-post = Phylo.read('withdata.mcc.tree', 'nexus')      # posterior summary
-for c_prior, c_post in zip(prior.get_nonterminals(), post.get_nonterminals()):
+def node_heights(path):
+    heights = {}
+    for clade in Phylo.read(path, 'nexus').get_nonterminals():
+        tips = frozenset(t.name for t in clade.get_terminals())
+        med = re.search(r'height_median=([-\d.eE]+)', clade.comment or '')
+        hpd = re.search(r'height_95%_HPD=\{([-\d.eE]+),([-\d.eE]+)\}', clade.comment or '')
+        heights[tips] = (float(med.group(1)) if med else None, (float(hpd.group(1)), float(hpd.group(2))) if hpd else None)
+    return heights
+
+prior = node_heights('prioronly.mcc.tree')   # effective prior summary
+post = node_heights('withdata.mcc.tree')     # posterior summary
+for tips, (median, hpd) in post.items():
     # if the posterior median and HPD ~ the effective prior, the data did not inform this node
-    print(c_prior.confidence, c_post.confidence)     # compare per-node summaries side by side
+    print(sorted(tips), 'prior', prior.get(tips, 'clade not in prior MCC tree'), 'posterior', median, hpd)
 ```
+
+For calibrated nodes the prior-only MCC tree may not contain every posterior clade; the per-calibration MRCA ages in the two BEAST `.log` files (`mrca.age(...)`) give the same comparison without depending on MCC topology.
 
 ## Check Temporal Signal Before Tip-Dating
 
@@ -117,13 +136,16 @@ for c_prior, c_post in zip(prior.get_nonterminals(), post.get_nonterminals()):
 
 ```bash
 # Build a quick ML tree to feed TempEst (modern-tree-inference)
-iqtree2 -s seqs.fa -m GTR+G -T AUTO --prefix rttree
+# (bioconda installs IQ-TREE 3 as `iqtree3`/`iqtree`; on IQ-TREE 2.x the binary is `iqtree2`)
+iqtree3 -s seqs.fa -m GTR+G -T AUTO --prefix rttree
 # TempEst (GUI): load rttree.treefile + a tab file of tip sampling dates;
 # read the root-to-tip regression -- require a POSITIVE slope; inspect R^2 and residual outliers.
 
 # Fast non-Bayesian tip-dating + CI as a cross-check (LSD2 via IQ-TREE)
-iqtree2 -s seqs.fa -m GTR+G --date dates.tsv --date-ci 100 --prefix lsd2   # dates.tsv: tip <tab> date
+iqtree3 -s seqs.fa -m GTR+G --date dates.tsv --date-ci 100 --prefix lsd2   # dates.tsv: tip <tab> date
 ```
+
+A positive slope is necessary, not sufficient: a dataset sampled over a few months can still give a positive slope (from root placement) with R^2 < 0.1 and a date-randomization cloud that overlaps the real rate, so always run the randomization test.
 
 ## Per-Method Failure Modes
 
@@ -177,7 +199,10 @@ iqtree2 -s seqs.fa -m GTR+G --date dates.tsv --date-ci 100 --prefix lsd2   # dat
 | Error / symptom | Cause | Solution |
 |-----------------|-------|----------|
 | MCMCTree refuses to run | no root calibration | set `RootAge` in the control file or a calibration on the root node |
-| MCMCTree calibration silently ignored | used `>`/`<` notation (parsing bug) | use `B()`/`L()`/`U()` in the tree file |
+| MCMCTree calibration mis-read | `>`/`<` notation on PAML 4.9b-4.9d (parsing bug fixed in 4.9e; 4.10.10 reads `'>0.35<0.55'` as `B(0.35, 0.55)`) | prefer `B()`/`L()`/`U()`, which also expose the tail probabilities |
+| `error: BDparas: expect flag ... C for conditional, M for multiplicative` | PAML 4.10 requires a flag after the birth-death parameters | `BDparas = 1 1 0.1 m` |
+| `error: file name empty.` with `usedata = 2` | PAML 4.10 wants the BV file name | `usedata = 2 in.BV` (copy `out.BV` from the `usedata = 3` run) |
+| `maintree file can have only one tree` | tree file has no `ntaxa ntree` header | first line e.g. `8 1`, then the calibrated Newick |
 | Posterior ~ prior for a node age | data uninformative for that node | report it honestly; do not claim the data estimated the age |
 | Wide CIs on both rate and root age | rate-time confounding from too few calibrations | add a well-justified calibration; check the rate-vs-root-age correlation |
 | Times off by 100x in MCMCTree | unit confusion (no fixed time unit; the user picks one, 100 Myr conventional so ages are O(1)) | keep calibrations and `rgene_gamma` in that same unit; then 0.6 = 60 Ma |
