@@ -16,13 +16,13 @@ Before using code patterns, verify installed versions match. If versions differ:
 If code throws ImportError, AttributeError, or TypeError, introspect the installed
 package and adapt the example to match the actual API rather than retrying.
 
-Version traps that change results, not just syntax: regenie `--vc-tests` accepts `skat,skato,skato-acat,acatv,acato,acato-full` (not `skat-o`), `--aaf-bins` upper bounds always add an implicit singleton mask, and `--build-mask` defaults to `max` (one carrier-status column per set) not `sum`. SAIGE-GENE+ `--maxMAF_in_groupTest` takes multiple comma-separated cutoffs in ONE run (the whole point of GENE+ over GENE). The SKAT R package selects SKAT-O with `method="optimal.adj"` or `method="SKATO"`, and `r.corr` is the rho grid (0=SKAT, 1=burden); `weights.beta=c(1,25)` is the rarer-up-weighting default. The single source of truth for versions is this block, not headings.
+Version traps that change results, not just syntax: regenie `--vc-tests` accepts `skat,skato,skato-acat,acatv,acato,acato-full` (not `skat-o`), `--aaf-bins` upper bounds always add an implicit all-variant mask (`.all`; a singleton mask needs `--singleton-carrier`, checked on regenie 4.1.3), and `--build-mask` defaults to `max` (one carrier-status column per set) not `sum`. SAIGE-GENE+ `--maxMAF_in_groupTest` takes multiple comma-separated cutoffs in ONE run (the whole point of GENE+ over GENE). The SKAT R package selects SKAT-O with `method="optimal.adj"` or `method="SKATO"`, and `r.corr` is the rho grid (0=SKAT, 1=burden); `weights.beta=c(1,25)` is the rarer-up-weighting default. The single source of truth for versions is this block, not headings.
 
 # Rare-Variant Association
 
 **"Test whether rare variants in this gene associate with my trait"** -> Aggregate the rare variants in a gene or region into one set-based statistic under an explicit mask, because no single rare variant has enough carriers to test alone.
 - CLI: `regenie --step 2 --anno-file ... --set-list ... --mask-def ... --aaf-bins 0.01 --vc-tests skato,acato` (biobank masks plus omnibus tests)
-- CLI: `step2_SPAtests.R --groupFile ... --annotation_in_groupTest lof,missense;lof --maxMAF_in_groupTest 0.0001,0.001,0.01` (SAIGE-GENE+, imbalance-robust)
+- CLI: `step2_SPAtests.R --groupFile ... --annotation_in_groupTest "lof,missense;lof" --maxMAF_in_groupTest 0.0001,0.001,0.01` (SAIGE-GENE+, imbalance-robust)
 - R: `SKAT(Z, obj, method="SKATO", weights.beta=c(1,25))` (direct, small cohorts)
 
 Scope: gene/region-based rare-variant aggregation (burden, SKAT, SKAT-O, ACAT-V/ACAT-O, STAAR), variant masks (functional class plus MAF cutoff), and the per-gene multiple-testing burden. Single-variant GWAS (linear/logistic/LMM/SPA per marker) routes to association-testing. The functional annotations that define masks (LoF, missense, CADD, regulatory) come from variant-calling/variant-annotation. Variant prioritization for clinical interpretation routes to clinical-databases/variant-prioritization.
@@ -67,12 +67,14 @@ Scope: gene/region-based rare-variant aggregation (burden, SKAT, SKAT-O, ACAT-V/
 
 ```bash
 # Step 1 builds the LOCO whole-genome predictor (the null) once, shared with single-variant GWAS.
+# Step 1 needs --bt whenever step 2 uses --bt (a 0/1 phenotype is otherwise refused as a QT).
+# Fit it on QC'd common array variants, not the rare-variant set (rare SNPs fail with "low variance").
 regenie --step 1 --bed geno_array --phenoFile pheno.txt --covarFile covar.txt \
-    --bsize 1000 --lowmem --out fit_null
+    --bsize 1000 --bt --lowmem --out fit_null
 
 # Step 2: --anno-file maps variant -> gene -> annotation; --set-list lists each gene's variants;
 # --mask-def names which annotation categories form each mask. --aaf-bins sets the MAF ceilings
-# (a singleton mask is always added). --vc-tests requests SKAT-O and the ACAT omnibus alongside
+# (an all-variant ".all" mask is always added; singleton masks need --singleton-carrier). --vc-tests requests SKAT-O and the ACAT omnibus alongside
 # burden. --firth keeps the imbalanced binary-trait tail calibrated; --build-mask max is the default.
 regenie --step 2 --bed geno_wes --phenoFile pheno.txt --covarFile covar.txt \
     --pred fit_null_pred.list --anno-file annot.txt --set-list sets.txt --mask-def masks.txt \
@@ -94,12 +96,15 @@ Run `regenie --step 2 ... --check-burden-files --ignore-pred` first to catch var
 **Approach:** fit the SPA-LMM null once (step 1, with a variance ratio), then run the set test passing multiple annotations and multiple max-MAF thresholds so GENE+ combines them.
 
 ```bash
-# Step 2 set test. --annotation_in_groupTest gives the masks (semicolon-separated groups, each a
-# comma-separated annotation list). --maxMAF_in_groupTest passes several MAF cutoffs in ONE run -
-# this multi-cutoff combination is exactly what GENE+ adds over the original SAIGE-GENE.
-step2_SPAtests.R --bgenFile geno_wes.bgen --groupFile groups.txt \
+# Step 2 set test. --annotation_in_groupTest gives the masks: COMMAS separate tests, SEMICOLONS join
+# annotations within one test, so "lof,missense;lof,missense;lof;synonymous" tests lof, lof+missense
+# and lof+missense+synonymous (step2_SPAtests.R --help, SAIGE 1.3.1). --maxMAF_in_groupTest passes
+# several MAF cutoffs in ONE run - this multi-cutoff combination is what GENE+ adds over SAIGE-GENE.
+# bgen input also needs --bgenFileIndex and --sampleFile (or use --bedFile/--bimFile/--famFile).
+step2_SPAtests.R --bgenFile geno_wes.bgen --bgenFileIndex geno_wes.bgen.bgi --sampleFile samples.txt \
+    --groupFile groups.txt \
     --GMMATmodelFile null.rda --varianceRatioFile null.varianceRatio.txt \
-    --annotation_in_groupTest "lof;lof,missense;lof,missense,synonymous" \
+    --annotation_in_groupTest "lof,missense;lof,missense;lof;synonymous" \
     --maxMAF_in_groupTest 0.0001,0.001,0.01 --is_output_moreDetails TRUE \
     --SAIGEOutputFile gene_tests.txt
 ```
