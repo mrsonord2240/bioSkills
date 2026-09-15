@@ -93,8 +93,9 @@ bcftools query -f '%CHROM\t%POS\t%INFO/ExcessHet\n' input.vcf.gz | awk '$3>54.69
 Contamination shows up in VCF stats as a het allele-balance distribution shifted away from 0.5, an elevated het count and het/hom ratio, and a depressed novel-fraction Ti/Tv. These are signals, not the measurement. Run VerifyBamID2 or CHARR to estimate the contamination fraction alpha (alpha > ~0.02-0.03 is a red flag; somatic pipelines are sensitive to 1%).
 
 ```bash
-bcftools query -i 'GT="het"' -f '[%AD]\n' input.vcf.gz | \
-    awk -F',' '{ab=$2/($1+$2); s+=ab; n++} END{print "mean het AB:", s/n}'   # expect ~0.5
+bcftools query -f '[%SAMPLE\t%GT\t%AD\n]' input.vcf.gz | \
+    awk -F'\t' '($2=="0/1" || $2=="0|1") {split($3,a,","); d=a[1]+a[2]; if (d>0) {s[$1]+=a[2]/d; n[$1]++}}
+        END {for (k in s) printf "%s\tmean het AB: %.3f (n=%d)\n", k, s[k]/n[k], n[k]}'   # expect ~0.5 per sample
 ```
 
 ## Identity QC: sample swaps, relatedness, sex
@@ -249,7 +250,7 @@ Creates a multi-page `summary.pdf` and individual PNGs (substitution types, inde
 - Filter HWE on excess heterozygosity only, within ancestry, in controls; heterozygote deficit is often real
 - The het allele-balance distribution shifting off 0.5 is a contamination signal; confirm with VerifyBamID2/CHARR on the BAM
 - Run identity QC (swap/relatedness/sex) early -- one undetected swap can create or erase a significant hit
-- plot-vcfstats requires matplotlib; install it separately if plots fail
+- plot-vcfstats requires matplotlib for the PNGs and pdflatex or tectonic for `summary.pdf`; without a LaTeX engine it exits 2 at the PDF step but the PNGs are still written
 
 ## Related Skills
 

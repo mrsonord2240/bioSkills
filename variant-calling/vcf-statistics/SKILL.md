@@ -121,9 +121,10 @@ The threshold 54.69 is GATK's default ExcessHet cutoff (phred-scaled p ~= 3.4e-6
 Cross-sample contamination is visible in VCF statistics before any dedicated test: the het allele-balance distribution shifts away from 0.5 (foreign reads add minor-allele support at true hom sites and skew true hets), the het count and het/hom ratio rise, and the novel-fraction Ti/Tv drops. These are SIGNALS, not the measurement. The real test runs on the BAM/CRAM: VerifyBamID2 (Zhang et al. 2020) estimates the contamination fraction alpha ancestry-agnostically by modeling observed allele fractions against population frequencies, and CHARR estimates alpha directly from VCF-level reference-read counts at hom-alt sites. An alpha above ~0.02-0.03 is a red flag; somatic pipelines are sensitive to even 1%. GATK pipelines feed `--contamination alpha` from VerifyBamID2. See variant-calling/gatk-variant-calling for wiring contamination estimates into calling.
 
 ```bash
-# quick het allele-balance sanity check from AD (het genotypes only)
-bcftools query -i 'GT="het"' -f '[%AD]\n' input.vcf.gz | \
-    awk -F',' '{ab=$2/($1+$2); s+=ab; n++} END{print "mean het AB:", s/n}'   # expect ~0.5
+# quick het allele-balance sanity check from AD: one line per sample, 0/1 genotypes only
+bcftools query -f '[%SAMPLE\t%GT\t%AD\n]' input.vcf.gz | \
+    awk -F'\t' '($2=="0/1" || $2=="0|1") {split($3,a,","); d=a[1]+a[2]; if (d>0) {s[$1]+=a[2]/d; n[$1]++}}
+        END {for (k in s) printf "%s\tmean het AB: %.3f (n=%d)\n", k, s[k]/n[k], n[k]}'   # expect ~0.5 per sample
 ```
 
 ## Sample-swap, relatedness, and sex checks (mandatory cohort QC)
@@ -203,6 +204,7 @@ See examples/vcf_stats.py for a cyvcf2 script computing counts, Ti/Tv, and mean 
 | `bcftools gtcheck -G 1` errors | `-G` removed after the 1.10 rewrite | Drop `-G`; cross-check runs by default without `-g` |
 | Low Ti/Tv only in novel set | False positives concentrate in novel variants | Raise stringency; recheck against dbSNP overlap |
 | `plot-vcfstats not found` / no plots | matplotlib missing or not on PATH | `pip install matplotlib`; check `which plot-vcfstats` |
+| plot-vcfstats exits 2 at the PDF step | no pdflatex or tectonic | Install a LaTeX engine for `summary.pdf`; the PNGs are already written |
 
 ## Related Skills
 
