@@ -1,7 +1,7 @@
 # Data Import - Usage Guide
 
 ## Overview
-Load mass-spectrometry data (mzML/mzXML raw spectra, MaxQuant proteinGroups.txt, DIA-NN report.parquet) into Python or R, and -- in the same step -- enforce the two contracts that decide whether downstream numbers mean anything: strip the search engine's bookkeeping (decoys, contaminants, site-only groups, semicolon razor-ID ambiguity) and pick the quant column that matches the question (Intensity vs LFQ intensity vs iBAQ). Import is also where the acquisition mode's missingness structure (DDA MNAR vs DIA MCAR) is inherited and diagnosed.
+Load mass-spectrometry data (mzML/mzXML raw spectra, MaxQuant proteinGroups.txt, DIA-NN report.parquet) into Python or R, and -- in the same step -- enforce the two contracts that decide whether downstream numbers mean anything: strip the search engine's bookkeeping (decoys, contaminants, site-only groups, semicolon razor-ID ambiguity) and pick the quant column that matches the question (Intensity vs LFQ intensity vs iBAQ). Import is also where the missingness structure is diagnosed (intensity-dependent in DDA and, with fewer missing values, in DIA) so the imputer is chosen from the diagnostic rather than the acquisition mode.
 
 ## Prerequisites
 ```bash
@@ -22,7 +22,7 @@ Tell your AI agent what you want to do:
 ### Loading Search Engine Output
 > "Load MaxQuant proteinGroups.txt, remove Reverse/contaminant/site-only rows, take the leading protein and gene from the semicolon lists, set zeros to NaN, and log2-transform the LFQ intensities"
 
-> "Import DIA-NN report.parquet, filter Q.Value and PG.Q.Value to 1%, and pivot PG.MaxLFQ into a protein-by-run matrix"
+> "Import DIA-NN report.parquet, filter Q.Value, PG.Q.Value and Global.PG.Q.Value to 1%, and pivot PG.MaxLFQ into a protein-by-run matrix"
 
 > "I have a proteinGroups.txt with Intensity, LFQ intensity, and iBAQ columns -- which one should I use for comparing two conditions, and why?"
 
@@ -42,8 +42,8 @@ Tell your AI agent what you want to do:
 3. Resolve semicolon protein-ID and gene-name lists to the leading (razor) entry, guarding blank gene names.
 4. Select the correct quant column for the question (LFQ intensity for between-sample, iBAQ within-sample, Intensity raw).
 5. Set MaxQuant zeros to NaN, then log2-transform.
-6. For DIA-NN, filter precursor- and protein-group q-values to 1% before pivoting PG.MaxLFQ.
-7. Diagnose the missingness pattern (MNAR vs MCAR) and flag which imputation class is legitimate downstream.
+6. For DIA-NN, filter run-level precursor and protein-group q-values and the experiment-wide Global.PG.Q.Value to 1% before pivoting PG.MaxLFQ, then set zeros to NaN and log2-transform.
+7. Diagnose the missingness pattern on the log2 matrix (abundance-dependent or not) and flag which imputation class is legitimate downstream.
 
 ## Supported Formats
 
@@ -61,7 +61,7 @@ Tell your AI agent what you want to do:
 - `Only identified by site` exists ONLY in proteinGroups.txt; guard the lookup when parsing other tables.
 - A MaxQuant zero means "not quantified", not "zero abundance" -- convert to NaN before log2.
 - Use `LFQ intensity` for between-sample comparison, `iBAQ` for within-sample molar abundance, raw `Intensity` only for custom normalization.
-- DIA-NN 2.0 dropped the TSV default; read `report.parquet` and q-filter before pivoting.
+- DIA-NN 2.0 dropped the TSV default; read `report.parquet` and q-filter (including `Global.PG.Q.Value`) before pivoting.
 - Diagnose missingness here: a negative correlation between abundance and missingness is the MNAR signature that forbids mean/KNN imputation.
 
 ## Related Skills

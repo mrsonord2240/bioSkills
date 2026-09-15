@@ -34,9 +34,12 @@ def load_clean_maxquant(path):
     pg['leading_gene'] = pg['Gene names'].where(pg['Gene names'].notna(), '').str.split(';').str[0]
 
     lfq_cols = [c for c in pg.columns if c.startswith('LFQ intensity ')]  # MaxLFQ-normalized, between-sample comparable
+    if not lfq_cols:
+        raise ValueError('No LFQ intensity columns: LFQ was not enabled in MaxQuant')
     matrix = pg[['leading_protein', 'leading_gene'] + lfq_cols].copy()
     matrix[lfq_cols] = matrix[lfq_cols].replace(0, np.nan)  # 0 means not-quantified; log2(0) = -inf
     matrix[lfq_cols] = np.log2(matrix[lfq_cols])
+    matrix = matrix[matrix[lfq_cols].notna().any(axis=1)]  # drop groups with no valid LFQ value
     return matrix, lfq_cols
 
 def assess_missingness(matrix, sample_cols):

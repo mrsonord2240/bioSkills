@@ -1,13 +1,13 @@
 ---
 name: bio-proteomics-data-import
-description: Loads mass-spectrometry data into Python/R and strips the search engine's bookkeeping before any number is trusted -- removes decoys (REV__/Reverse), contaminants (CON__/Potential contaminant), Only-identified-by-site groups, and resolves semicolon razor/leading protein-ID ambiguity in MaxQuant proteinGroups.txt, DIA-NN report.parquet, and mzML/mzXML. Distinguishes Intensity (raw) vs LFQ intensity (MaxLFQ) vs iBAQ, treats a MaxQuant zero as missing (NaN, not log2(-inf)), and inherits the acquisition mode's missingness contract (DDA MNAR vs DIA MCAR). Use when starting an analysis from raw spectra or a search engine output. Downstream normalization and stats are differential-abundance; reporter-ion/MaxLFQ quant is quantification; protein grouping is protein-inference.
+description: Loads mass-spectrometry data into Python/R and strips the search engine's bookkeeping before any number is trusted -- removes decoys (REV__/Reverse), contaminants (CON__/Potential contaminant), Only-identified-by-site groups, and resolves semicolon razor/leading protein-ID ambiguity in MaxQuant proteinGroups.txt, DIA-NN report.parquet, and mzML/mzXML. Distinguishes Intensity (raw) vs LFQ intensity (MaxLFQ) vs iBAQ, treats a MaxQuant zero as missing (NaN, not log2(-inf)), and diagnoses the missingness contract (intensity-dependent in both DDA and DIA; DIA has fewer missing values). Use when starting an analysis from raw spectra or a search engine output. Downstream normalization and stats are differential-abundance; reporter-ion/MaxLFQ quant is quantification; protein grouping is protein-inference.
 tool_type: mixed
 primary_tool: pyOpenMS
 ---
 
 ## Version Compatibility
 
-Reference examples tested with: pyOpenMS 3.1+, pandas 2.2+, numpy 1.26+, MSnbase 2.28+
+Reference examples tested with: pyOpenMS 3.5.0, pandas 3.0.5, numpy 2.5.3 (Python blocks, 2026-09-15); MSnbase 2.28+
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -26,7 +26,7 @@ Scope: this skill owns reading spectra/search outputs into memory, deleting deco
 
 ## The Single Most Important Modern Insight -- Import Is Where Two Contracts Are Read and Enforced
 
-1. **A "data import" is never just file parsing -- it is the moment the acquisition mode's quantitative contract and its missingness structure are inherited.** DDA selects the top-N most intense precursors per cycle, and which precursors get picked is partly stochastic and abundance-biased, so the same low-abundance peptide is sampled in run A and missed in run B; this manufactures structured, left-censored MNAR missingness. DIA fragments every precursor in every window every cycle, so its (fewer) missing values are closer to MCAR. The catastrophic error this prevents: imputing a DDA matrix with a mean/KNN method that assumes MCAR, which biases low-abundance proteins upward and manufactures false hits. The mode is born at acquisition and inherited at import; the missingness diagnosis made here dictates which imputation is even legitimate downstream.
+1. **A "data import" is never just file parsing -- it is the moment the acquisition mode's quantitative contract and its missingness structure are inherited.** DDA selects the top-N most intense precursors per cycle, and which precursors get picked is partly stochastic and abundance-biased, so the same low-abundance peptide is sampled in run A and missed in run B; this manufactures structured, left-censored MNAR missingness. DIA fragments every precursor in every window every cycle, so it has fewer missing values, but those it has are still mostly intensity-dependent (concentrated in low-abundance proteins), not MCAR (Hediyeh-zadeh 2023). The catastrophic error this prevents: imputing a matrix with a mean/KNN method that assumes MCAR, which biases low-abundance proteins upward and manufactures false hits. The mode is born at acquisition and inherited at import, but the imputer is chosen from the missingness diagnosis made here, not from the acquisition mode alone.
 
 2. **The search engine's bookkeeping must be stripped before any number is trusted.** A proteinGroups.txt carries decoy rows (`Reverse == '+'`, `REV__` prefix in the ID) from the target-decoy FDR machinery, contaminant rows (`Potential contaminant == '+'`, `CON__` prefix), and Only-identified-by-site rows (the protein has no unmodified-peptide evidence, only a modified site). Keeping any of these leaks non-biological signal into the intensity matrix and inflates IDs. The catastrophic error: reporting differential abundance on a matrix where decoy or keratin rows survived.
 
@@ -36,7 +36,7 @@ Scope: this skill owns reading spectra/search outputs into memory, deleting deco
 
 | Tool / method | Citation | Mechanism / role | When |
 |---|---|---|---|
-| pyOpenMS `MzMLFile().load` | Chambers 2012 (ProteoWizard lineage) | Loads mzML/mzXML into an MSExperiment in memory; iterate spectra by MS level | Programmatic access to raw peaks, precursor m/z, isolation windows |
+| pyOpenMS `MzMLFile().load` | Rost 2014 | Loads mzML/mzXML into an MSExperiment in memory; iterate spectra by MS level | Programmatic access to raw peaks, precursor m/z, isolation windows |
 | pandas `read_csv`/`read_parquet` | -- | Tabular ingest of MaxQuant TSV and DIA-NN parquet | All search-engine output tables |
 | DIA-NN report | Demichev 2020 | Long-format precursor table; `report.parquet` is the default (1.9+) and the only default (2.0) | DIA quant; pivot on `PG.MaxLFQ` after q-filtering |
 | MaxQuant `txt/` outputs | Cox 2014 (MaxLFQ) | `proteinGroups.txt` (group level), `evidence.txt` (per-PSM) | DDA label-free / TMT search results |
@@ -51,11 +51,11 @@ Scope: this skill owns reading spectra/search outputs into memory, deleting deco
 | MaxQuant DDA label-free, between-sample comparison | Read `LFQ intensity` columns from proteinGroups.txt | MaxLFQ-normalized; the only MaxQuant column valid for cross-sample ratios |
 | MaxQuant, absolute/molar abundance within one sample | Read `iBAQ` columns | iBAQ is a within-sample molar proxy; do not use across samples |
 | Need raw uncorrected signal for a custom normalization | Read `Intensity` columns, normalize yourself | `Intensity` is raw summed precursor area, not comparable as-is |
-| DIA-NN output (1.9 or 2.0) | `pd.read_parquet('report.parquet')`, filter q-values, pivot `PG.MaxLFQ` | 2.0 dropped the TSV default; q-filter before pivot or low-confidence rows leak in |
+| DIA-NN output (1.9 or 2.0) | `pd.read_parquet('report.parquet')`, filter run-level and `Global.PG.Q.Value` q-values, pivot `PG.MaxLFQ`, 0 -> NaN, log2 | 2.0 dropped the TSV default; without the global protein q-value filter, groups that pass only within single runs leak into the cross-run matrix |
 | Raw spectra, need peaks/precursor/isolation window | pyOpenMS `MzMLFile().load` | Programmatic peak and isolation-window access for QC and co-isolation reasoning |
 | R-based pipeline, quantified features | QFeatures `readQFeatures` + `aggregateFeatures` | Current Bioconductor; MSnbase is maintenance-only |
 | Data came from DDA, planning imputation | Diagnose missingness as MNAR -> route to left-censored imputation | DDA top-N sampling makes missingness abundance-dependent |
-| Data came from DIA, planning imputation | Treat missingness as closer to MCAR | DIA samples every precursor every cycle |
+| Data came from DIA, planning imputation | Run the same diagnostic; a negative abundance-missingness correlation means left-censored handling, as for DDA | DIA has fewer missing values, but they are still mostly intensity-dependent (Hediyeh-zadeh 2023) |
 
 Default when uncertain: read `LFQ intensity` (MaxQuant) or `PG.MaxLFQ` after q-filtering (DIA-NN), strip Reverse/contaminant/site-only rows, set 0 -> NaN, then diagnose missingness before choosing an imputer.
 
@@ -63,7 +63,7 @@ Default when uncertain: read `LFQ intensity` (MaxQuant) or `PG.MaxLFQ` after q-f
 
 **Goal:** Parse raw spectra into memory for QC, peak access, and isolation-window reasoning.
 
-**Approach:** Load into an MSExperiment (filled in place), iterate by MS level; `get_peaks()` returns a tuple of (mz, intensity) numpy arrays, and `getPrecursors()` returns a list.
+**Approach:** Load into an MSExperiment (filled in place), iterate by MS level; `get_peaks()` returns a tuple of (mz, intensity) numpy arrays, and `getPrecursors()` returns a list that is empty for all-ion (AIF/MSE/bbCID) MS2 scans. An isolation width of 0 means the offsets were not written, not a 0-Th window.
 
 ```python
 from pyopenms import MSExperiment, MzMLFile
@@ -75,9 +75,14 @@ for spectrum in exp:
     if spectrum.getMSLevel() == 1:
         mz, intensity = spectrum.get_peaks()  # tuple of two numpy arrays
     elif spectrum.getMSLevel() == 2:
-        precursor = spectrum.getPrecursors()[0]  # getPrecursors returns a list
+        precs = spectrum.getPrecursors()  # a list; empty for all-ion (AIF/MSE) MS2 scans
+        if not precs:
+            continue  # record as no-precursor MS2 instead of indexing [0]
+        precursor = precs[0]
         precursor_mz = precursor.getMZ()
         window = precursor.getIsolationWindowLowerOffset() + precursor.getIsolationWindowUpperOffset()
+        if window == 0:
+            print(f'{spectrum.getNativeID()}: isolation offsets not written (width unknown, not 0 Th)')
 ```
 
 ## Loading and Cleaning MaxQuant proteinGroups.txt
@@ -101,31 +106,37 @@ pg['leading_protein'] = pg['Protein IDs'].str.split(';').str[0]
 pg['leading_gene'] = pg['Gene names'].where(pg['Gene names'].notna(), '').str.split(';').str[0]
 
 lfq_cols = [c for c in pg.columns if c.startswith('LFQ intensity ')]  # MaxLFQ-normalized, between-sample comparable
+if not lfq_cols:
+    raise ValueError('No LFQ intensity columns: LFQ was not enabled in MaxQuant; use Intensity and normalize explicitly')
 matrix = pg[['leading_protein', 'leading_gene'] + lfq_cols].copy()
 matrix[lfq_cols] = matrix[lfq_cols].replace(0, np.nan)  # MaxQuant writes 0 for missing; log2(0) = -inf
 matrix[lfq_cols] = np.log2(matrix[lfq_cols])
+matrix = matrix[matrix[lfq_cols].notna().any(axis=1)]  # groups with no valid LFQ value carry no quant
 ```
 
 ## Loading DIA-NN report.parquet
 
 **Goal:** Reshape the long DIA-NN report into a confident protein-by-run matrix.
 
-**Approach:** Read the parquet (default since 1.9, only default in 2.0), filter precursor- AND protein-group q-values to 1% FDR BEFORE pivoting on `PG.MaxLFQ`.
+**Approach:** Read the parquet (default since 1.9, only default in 2.0), filter run-level precursor and protein-group q-values AND the experiment-wide `Global.PG.Q.Value` to 1% FDR BEFORE pivoting on `PG.MaxLFQ` (with library-based MBR on 1.9.x use `Lib.PG.Q.Value`), then set 0 -> NaN and log2.
 
 ```python
+import numpy as np
 import pandas as pd
 
 report = pd.read_parquet('report.parquet')  # report.tsv dropped as default in DIA-NN 2.0
-report = report[(report['Q.Value'] <= 0.01) & (report['PG.Q.Value'] <= 0.01)]  # 1% FDR before quant
+report = report[(report['Q.Value'] <= 0.01) & (report['PG.Q.Value'] <= 0.01)
+                & (report['Global.PG.Q.Value'] <= 0.01)]  # run-level AND experiment-wide 1% FDR before quant
 
 matrix = report.pivot_table(index='Protein.Group', columns='Run', values='PG.MaxLFQ', aggfunc='first')
+matrix = np.log2(matrix.replace(0, np.nan))  # PG.MaxLFQ can be 0 too; log2(0) = -inf
 ```
 
 ## Diagnosing the Missingness Contract
 
 **Goal:** Quantify the missing-value pattern so the legitimate imputation class can be chosen downstream.
 
-**Approach:** Count NaN per protein and per sample; relate the pattern to acquisition mode (DDA -> structured MNAR; DIA -> closer to MCAR). A correlation between missingness and mean abundance is the MNAR signature.
+**Approach:** Count NaN per protein and per sample on a log2 matrix with NaN for missing (zeros left in, or a linear scale, hide the signature). A negative correlation between missingness and mean abundance is the MNAR (left-censored) signature; expect it in DDA and, with fewer missing values, in DIA too.
 
 ```python
 import numpy as np
@@ -174,23 +185,23 @@ def assess_missingness(matrix, sample_cols):
 **Trigger:** Reading `report.tsv` on DIA-NN 2.0, or pivoting before q-filtering.
 **Mechanism:** 2.0 defaults to (and only defaults to) `report.parquet`; pivoting unfiltered rows includes precursors above 1% FDR.
 **Symptom:** FileNotFoundError on report.tsv; or low-confidence quant inflating the matrix.
-**Fix:** `pd.read_parquet('report.parquet')`; filter `Q.Value <= 0.01 & PG.Q.Value <= 0.01` before pivoting `PG.MaxLFQ`.
+**Fix:** `pd.read_parquet('report.parquet')`; filter `Q.Value <= 0.01 & PG.Q.Value <= 0.01 & Global.PG.Q.Value <= 0.01` before pivoting `PG.MaxLFQ`.
 
 ### MNAR imputed as MCAR
 
-**Trigger:** Mean/median/KNN imputation on a DDA matrix.
+**Trigger:** Mean/median/KNN imputation on a DDA or DIA matrix whose diagnostic shows abundance-dependent missingness.
 **Mechanism:** DDA missingness is abundance-dependent (left-censored); MCAR imputers fill missing low values with the central tendency, biasing them upward.
 **Symptom:** Low-abundance proteins gain false high values; spurious differential hits.
-**Fix:** Diagnose the abundance-missingness correlation here; route DDA to left-censored imputation (downshifted-Gaussian / QRILC / MinProb) in differential-abundance; DIA tolerates standard imputers.
+**Fix:** Diagnose the abundance-missingness correlation here and choose the imputer from it, not from the acquisition mode: a negative correlation routes to left-censored imputation (downshifted-Gaussian / QRILC / MinProb) or a censoring-aware model in differential-abundance. DIA's fewer missing values limit the damage but do not make them MCAR.
 
 ## Quantitative Thresholds
 
 | Threshold | Source | Rationale |
 |---|---|---|
-| DIA-NN import filter `Q.Value <= 0.01` AND `PG.Q.Value <= 0.01` | Demichev 2020; target-decoy convention | Precursor- and protein-group-level 1% FDR enforced before any quant value is used |
+| DIA-NN import filter `Q.Value <= 0.01` AND `PG.Q.Value <= 0.01` AND `Global.PG.Q.Value <= 0.01` | Demichev 2020; DIA-NN documentation | Run-level precursor/protein and experiment-wide protein-group 1% FDR enforced before any quant value enters a cross-run matrix |
 | Peptide/protein FDR 1% (q <= 0.01) | Target-decoy convention | Standard ID confidence at both peptide and protein levels |
 | MaxQuant zero -> NaN | MaxQuant output convention | 0 encodes "not quantified"; log2(0) = -inf corrupts every transform |
-| Min peptides per protein for quant >= 2 | Community quant practice | Single-peptide ("one-hit-wonder") proteins are ID/quant-unreliable |
+| Min peptides per protein for quant >= 2 | Community quant practice | Single-peptide ("one-hit-wonder") proteins are ID/quant-unreliable; not applied by the import code above -- apply it (e.g. `Razor + unique peptides >= 2`) as a documented study choice |
 | Valid-value filter >= 50-70% per group | Modeling choice (document per study) | Caps imputation burden; the exact cutoff is a study decision, not a universal constant |
 | Take FIRST semicolon entry as leading protein/gene | MaxQuant proteinGroups convention | The leading/razor protein is the group identifier; trailing entries are shared-peptide members |
 
@@ -198,7 +209,8 @@ def assess_missingness(matrix, sample_cols):
 
 | Error / symptom | Cause | Solution |
 |---|---|---|
-| `-inf` values after log2 | Zeros not converted to NaN | `df.replace(0, np.nan)` before `np.log2` |
+| `-inf` values after log2 | Zeros not converted to NaN (MaxQuant LFQ or DIA-NN PG.MaxLFQ) | `df.replace(0, np.nan)` before `np.log2` |
+| `IndexError: list index out of range` at `getPrecursors()[0]` | All-ion (AIF/MSE) MS2 scan without a precursor | Check `if not spectrum.getPrecursors()` before indexing |
 | `FileNotFoundError: report.tsv` (DIA-NN 2.0) | TSV no longer the default output | `pd.read_parquet('report.parquet')` |
 | `KeyError: 'Only identified by site'` | That column exists ONLY in proteinGroups.txt | Use `df.get('Only identified by site', '')` or guard the column lookup |
 | Mixed-type / DtypeWarning on MaxQuant load | Wide TSV with mixed column types | `pd.read_csv(..., low_memory=False)` |
@@ -210,6 +222,8 @@ def assess_missingness(matrix, sample_cols):
 
 - Cox J, Hein MY, Luber CA, Paron I, Nagaraj N, Mann M. 2014. Accurate proteome-wide label-free quantification by delayed normalization and maximal peptide ratio extraction, termed MaxLFQ. *Mol Cell Proteomics* 13(9):2513-2526.
 - Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. 2020. DIA-NN: neural networks and interference correction enable deep proteome coverage in high throughput. *Nat Methods* 17(1):41-44.
+- Rost HL, Schmitt U, Aebersold R, Malmstrom L. 2014. pyOpenMS: a Python-based interface to the OpenMS mass-spectrometry algorithm library. *Proteomics* 14(1):74-77.
+- Hediyeh-zadeh S, Webb AI, Davis MJ. 2023. MsImpute: estimation of missing peptide intensity data in label-free quantitative mass spectrometry. *Mol Cell Proteomics* 22(8):100558.
 - Chambers MC, Maclean B, Burke R, et al. 2012. A cross-platform toolkit for mass spectrometry and proteomics. *Nat Biotechnol* 30(10):918-920.
 - Hulstaert N, Shofstahl J, Sachsenberg T, et al. 2020. ThermoRawFileParser: modular, scalable, and cross-platform RAW file conversion. *J Proteome Res* 19(1):537-542.
 
