@@ -75,15 +75,17 @@ The order of operations matters. Performing these steps out of order can produce
 
 The correct order:
 
-1. **Decompose MNPs** into atomic SNPs (`--atomize`)
-2. **Split multiallelic** sites into biallelic records (`-m-`)
+1. **Split multiallelic** sites into biallelic records (`-m-`)
+2. **Decompose MNPs** into atomic SNPs (`--atomize`)
 3. **Left-align and trim** against the reference (`-f reference.fa`)
+
+Split BEFORE atomizing. `--atomize` defaults to `--atom-overlaps '*'`, so atomizing a multiallelic record first rewrites a 1/2 SNV site as `A>C,*` + `A>G,*` and the split then emits two spurious `A>*` records (checked on bcftools 1.21 and 1.24).
 
 Combined as a piped pipeline:
 
 ```bash
-bcftools norm --atomize input.vcf.gz | \
-    bcftools norm -m- | \
+bcftools norm -m- input.vcf.gz | \
+    bcftools norm --atomize | \
     bcftools norm -f reference.fa -Oz -o normalized.vcf.gz
 bcftools index normalized.vcf.gz
 ```
@@ -95,7 +97,7 @@ bcftools norm -m- input.vcf.gz | \
     bcftools norm -f reference.fa -Oz -o normalized.vcf.gz
 ```
 
-A single-pass `bcftools norm -f ref.fa -m-any` is acceptable for basic use cases but does not control the decomposition order and skips MNP atomization.
+A single-pass `bcftools norm -f ref.fa -m-any --atomize` also splits before atomizing. Plain `bcftools norm -f ref.fa -m-any` is acceptable for basic use cases but skips MNP atomization.
 
 ## Tool Discordance: bcftools vs vt vs GATK
 
@@ -183,11 +185,13 @@ When a downstream tool does not require splitting, prefer keeping multiallelic s
 | `-m-any` | Split all multiallelic sites |
 | `-m-snps` | Split multiallelic SNPs only |
 | `-m-indels` | Split multiallelic indels only |
-| `-m-both` | Split SNPs and indels separately |
+| `-m-both` | Split SNPs and indels (identical to `-m-any` when splitting) |
 | `-m+any` | Join biallelic sites into multiallelic |
 | `-m+snps` | Join biallelic SNPs |
 | `-m+indels` | Join biallelic indels |
-| `-m+both` | Join SNPs and indels separately |
+| `-m+both` | Join SNPs and indels into separate records (does not merge a SNP with an indel) |
+
+The type string (`any`/`both`) only changes behaviour when joining (`-m+`).
 
 ### Join Biallelic to Multiallelic
 
@@ -242,7 +246,7 @@ chr1  102  .  G  A  30  PASS
 
 **Caveat -- decomposition destroys phase needed for functional annotation.** The original MNP record guarantees that its substitutions occur on the SAME haplotype. Atomization discards that guarantee. The concrete failure: two adjacent SNVs falling in one codon, annotated independently after decomposition, can each look **synonymous** while the true MNV (the haplotype) is **missense or nonsense** (or the reverse). VEP/SnpEff give the wrong amino-acid consequence on decomposed alleles because they no longer see the codon change.
 
-This is the unresolved decompose-vs-atomic tension: decompose for variant **matching** (dbSNP/ClinVar/gnomAD lookup, allele-frequency comparison), but compute **functional consequence** on the haplotype-resolved (undecomposed / phased) representation -- run `bcftools csq` on the un-atomized VCF, which is codon-aware. Keep the atomized copy for matching and the un-atomized copy for annotation; do not feed atomized alleles to a per-record consequence caller. See variant-calling/variant-annotation.
+This is the unresolved decompose-vs-atomic tension: decompose for variant **matching** (dbSNP/ClinVar/gnomAD lookup, allele-frequency comparison), but compute **functional consequence** on the haplotype-resolved (undecomposed / phased) representation -- run `bcftools csq` on the un-atomized VCF, which is codon-aware. `csq` defaults to `-p r` (require phased genotypes) and exits with "Unphased heterozygous genotype" on ordinary unphased calls, so set `--phase`: `bcftools csq -p a -f ref.fa -g genes.gff3.gz in.vcf.gz` assumes every het is in cis (it will merge nearby hets into one haplotype consequence, including atomized SNVs), `-p m` merges only where phase is known, `-p s` treats unphased hets as separate haplotypes. Keep the atomized copy for matching and the un-atomized copy for annotation; do not feed atomized alleles to a per-record consequence caller. See variant-calling/variant-annotation.
 
 ### Atomize with Old Record Tag
 
@@ -309,8 +313,8 @@ Duplicate removal options (`-d`):
 ```bash
 for vcf in gatk.vcf.gz freebayes.vcf.gz; do
     base=$(basename "$vcf" .vcf.gz)
-    bcftools norm --atomize "$vcf" | \
-        bcftools norm -m- | \
+    bcftools norm -m- "$vcf" | \
+        bcftools norm --atomize | \
         bcftools norm -f reference.fa -Oz -o "${base}.norm.vcf.gz"
     bcftools index "${base}.norm.vcf.gz"
 done
@@ -323,8 +327,8 @@ The `isec` output directories: `0000.vcf` = private to first file, `0001.vcf` = 
 ### Before Database Annotation
 
 ```bash
-bcftools norm --atomize variants.vcf.gz | \
-    bcftools norm -m- | \
+bcftools norm -m- variants.vcf.gz | \
+    bcftools norm --atomize | \
     bcftools norm -f reference.fa -Oz -o for_annotation.vcf.gz
 bcftools index for_annotation.vcf.gz
 ```
@@ -388,7 +392,8 @@ Note: this check does not detect indels requiring left-alignment, since that req
 | Atomize MNPs | `bcftools norm --atomize in.vcf.gz` |
 | Fix REF alleles | `bcftools norm -f ref.fa -c s in.vcf.gz` |
 | Remove duplicates | `bcftools norm -d exact in.vcf.gz` |
-| Full pipeline | `bcftools norm --atomize \| bcftools norm -m- \| bcftools norm -f ref.fa` |
+| Full pipeline | `bcftools norm -m- \| bcftools norm --atomize \| bcftools norm -f ref.fa` |
+| Consequences on unphased calls | `bcftools csq -p a -f ref.fa -g genes.gff3.gz in.vcf.gz` |
 
 ## Common Errors
 
@@ -398,6 +403,8 @@ Note: this check does not detect indels requiring left-alignment, since that req
 | `not sorted` | Unsorted input | Run `bcftools sort` first |
 | `duplicate records` | Same position twice after splitting | Use `-d exact` to remove |
 | `--atomize` unrecognized | bcftools < 1.12 | Upgrade bcftools, or use `vt decompose_blocksub` as alternative |
+| Spurious `ALT=*` records after atomize + split | atomized before splitting (`--atom-overlaps '*'`) | Split first: `norm -m- \| norm --atomize` |
+| `Unphased heterozygous genotype` from `bcftools csq` | csq defaults to `-p r` | Set `-p a`, `-p m` or `-p s` explicitly |
 | Split records carry wrong per-allele AF/AD | custom field mis-declared `Number=.` | Fix the header `Number` to `A`/`R`/`G` so bcftools subsets it on split |
 | HGVS `c.` position disagrees with VCF POS | left-align (5' genomic) vs HGVS 3'-rule (transcript) | Expected; let the annotation engine emit HGVS, never hand-derive from POS |
 
