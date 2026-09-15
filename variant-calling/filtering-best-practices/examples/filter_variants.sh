@@ -41,7 +41,11 @@ bcftools filter -i '
 ' "${OUTPUT_PREFIX}_indels_raw.vcf.gz" -Oz -o "${OUTPUT_PREFIX}_indels_filtered.vcf.gz"
 
 echo "=== Merging filtered variants ==="
-bcftools concat "${OUTPUT_PREFIX}_snps_filtered.vcf.gz" "${OUTPUT_PREFIX}_indels_filtered.vcf.gz" | \
+# SNP and indel records interleave by position, so plain concat aborts on multi-contig input
+# ("chromosome block chr1 is not contiguous"). -a (allow overlaps) needs indexed inputs.
+bcftools index -f "${OUTPUT_PREFIX}_snps_filtered.vcf.gz"
+bcftools index -f "${OUTPUT_PREFIX}_indels_filtered.vcf.gz"
+bcftools concat -a "${OUTPUT_PREFIX}_snps_filtered.vcf.gz" "${OUTPUT_PREFIX}_indels_filtered.vcf.gz" | \
     bcftools sort -Oz -o "${OUTPUT_PREFIX}_all_filtered.vcf.gz"
 bcftools index -t "${OUTPUT_PREFIX}_all_filtered.vcf.gz"
 

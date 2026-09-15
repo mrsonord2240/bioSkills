@@ -172,15 +172,21 @@ gatk FilterMutectCalls -R reference.fa -V mutect2_raw.vcf \
     --contamination-table contamination.table \
     --tumor-segmentation segments.table \
     -O mutect2_filtered.vcf
-bcftools filter -i 'INFO/TLOD>6.3 && FMT/AF[0]>0.05 && FMT/DP[0]>20' \
+# FORMAT/AF is Number=A, so it needs [sample:subfield]. Index the TUMOR column explicitly:
+# Mutect2 often lists the normal first, so [0] would test the normal.
+TUMOR=$(bcftools view -h mutect2_filtered.vcf | grep '^##tumor_sample=' | cut -d= -f2)
+T=$(( $(bcftools query -l mutect2_filtered.vcf | grep -nxF "$TUMOR" | cut -d: -f1) - 1 ))
+bcftools filter -i "INFO/TLOD>6.3 && FMT/AF[$T:0]>0.05 && FMT/DP[$T]>20" \
     mutect2_filtered.vcf -o somatic_final.vcf
 ```
+
+The expression is a site filter: a record passes if the tumor column meets the thresholds; the normal column is not tested.
 
 ## Python Filtering (cyvcf2)
 
 **Goal:** Apply custom multi-metric per-variant logic in Python.
 
-**Approach:** Iterate with cyvcf2, read QUAL/INFO fields, write survivors with Writer. `INFO.get` returns None for missing tags -- treat None as pass to avoid the hom-alt trap.
+**Approach:** Iterate with cyvcf2, read QUAL/INFO fields, write survivors with Writer. `INFO.get` returns None for missing tags -- treat None as pass to avoid the hom-alt trap. This is a minimal pattern, not the full hard filter: add the QD, SOR and None-guarded RankSum terms from the SNP expression above before using it in place of that filter.
 
 ```python
 from cyvcf2 import VCF, Writer
@@ -242,6 +248,8 @@ Stratify by genomic context; artifact-prone regions dominate false positives. Ex
 | Every hom-alt site removed | RankSum missing not guarded | Add `\|\| INFO/X = "."` to each RankSum term |
 | VQSR "converged" but nonsense | Too few samples/variants | Switch to hard filters, VETS, or NVScoreVariants |
 | empty output | Filter too strict | Relax thresholds; inspect annotation histograms |
+| `chromosome block chr1 is not contiguous` | `concat` of position-interleaved SNP and indel files | Index both and use `bcftools concat -a` |
+| `tag AF can have multiple subfields, run as AF[sample:subfield]` | Number=A/R FORMAT tag indexed as `AF[0]` | Use `FMT/AF[T:0]` (T = sample column) or `FMT/AD[:1]` for every sample |
 
 ## Related Skills
 
