@@ -205,8 +205,10 @@ bcftools annotate --rename-chrs rename.txt input.vcf.gz -Oz -o renamed.vcf.gz
 ### Basic Usage
 
 ```bash
-bcftools csq -f reference.fa -g genes.gff3.gz input.vcf.gz -Oz -o consequences.vcf.gz
+bcftools csq -p a -f reference.fa -g genes.gff3.gz input.vcf.gz -Oz -o consequences.vcf.gz
 ```
+
+`csq` defaults to `-p r` (require phased genotypes) and exits with "Unphased heterozygous genotype" on ordinary calls. `-p a` assumes every het is in cis, so nearby hets in one transcript are merged into one haplotype consequence (a frameshift can absorb a downstream stop, shown as `@POS`); `-p m` merges only phased hets; `-p s` treats unphased hets as separate haplotypes.
 
 ### Output Format
 
@@ -302,39 +304,43 @@ bcftools annotate -a clinvar.vcf.gz \
 
 ### Basic Pipeline
 
+`bcftools annotate -a <vcf>` needs an indexed target file, so it cannot read a pipe ("not compressed with bgzip"): write each annotate step to an indexed `-Oz` file.
+
 ```bash
 # 1. Add rsIDs
-bcftools annotate -a dbsnp.vcf.gz -c ID input.vcf.gz | \
-# 2. Add population frequencies
-bcftools annotate -a gnomad.vcf.gz -c INFO/AF | \
-# 3. Output
-bgzip -c > annotated.vcf.gz
-
+bcftools annotate -a dbsnp.vcf.gz -c ID input.vcf.gz -Oz -o with_ids.vcf.gz
+bcftools index -f with_ids.vcf.gz
+# 2. Add population frequencies into a NEW tag (copying over INFO/AF keeps the cohort AF where gnomAD has no record)
+bcftools annotate -a gnomad.vcf.gz -c INFO/gnomAD_AF:=INFO/AF with_ids.vcf.gz -Oz -o annotated.vcf.gz
 bcftools index annotated.vcf.gz
 ```
 
 ### Clinical Variant Analysis
 
 ```bash
-# Normalize
-bcftools norm -f reference.fa -m-any input.vcf.gz | \
-# Add clinical significance
-bcftools annotate -a clinvar.vcf.gz -c INFO/CLNSIG,INFO/CLNDN | \
-# Predict consequences
-bcftools csq -f reference.fa -g genes.gff3.gz | \
-# Filter pathogenic
+# Normalize (indexed file: annotate -a <vcf> cannot read a pipe)
+bcftools norm -f reference.fa -m-any input.vcf.gz -Oz -o norm.vcf.gz
+bcftools index -f norm.vcf.gz
+# Add ClinVar assertions
+bcftools annotate -a clinvar.vcf.gz -c INFO/CLNSIG,INFO/CLNDN norm.vcf.gz -Oz -o with_clinvar.vcf.gz
+bcftools index -f with_clinvar.vcf.gz
+# Predict consequences (-p a: unphased hets assumed in cis; csq exits on unphased hets without --phase)
+bcftools csq -p a -f reference.fa -g genes.gff3.gz with_clinvar.vcf.gz -Ou | \
+# Keep variants with a Pathogenic assertion (research leads, not classifications)
 bcftools view -i 'INFO/CLNSIG~"Pathogenic"' -Oz -o pathogenic.vcf.gz
 ```
 
 ### Rare Variant Analysis
 
 ```bash
-# Annotate with population frequency
-bcftools annotate -a gnomad.vcf.gz -c INFO/AF input.vcf.gz | \
-# Filter rare variants (AF < 1%)
-bcftools filter -i 'INFO/AF<0.01 || INFO/AF="."' | \
-# Predict consequences
-bcftools csq -f reference.fa -g genes.gff3.gz -Oz -o rare_consequences.vcf.gz
+# Annotate the gnomAD filtering AF into a NEW tag. Copying into INFO/AF would keep the cohort's own
+# INFO/AF wherever gnomAD has no record, so the "absent" test below would never fire.
+bcftools annotate -a gnomad.vcf.gz -c INFO/gnomAD_FAF:=INFO/fafmax_faf95_max input.vcf.gz -Oz -o with_gnomad.vcf.gz
+bcftools index -f with_gnomad.vcf.gz
+# Keep rare (FAF < 1%) or absent-from-gnomAD variants
+bcftools filter -i 'INFO/gnomAD_FAF<0.01 || INFO/gnomAD_FAF="."' with_gnomad.vcf.gz -Ou | \
+# Predict consequences (-p a: unphased hets assumed in cis)
+bcftools csq -p a -f reference.fa -g genes.gff3.gz -Oz -o rare_consequences.vcf.gz
 ```
 
 ## Parsing SnpEff ANN in Python

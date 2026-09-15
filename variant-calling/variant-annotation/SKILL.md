@@ -62,12 +62,12 @@ Rules:
 
 Decision: report on MANE Select (plus MANE Plus Clinical where assigned), not worst-consequence. Worst-consequence reports a canonical splice change in a minor non-expressed isoform as "splice" even when MANE Select is intronic, manufacturing false PVS1 candidates; restricting to MANE Select alone can miss a variant that only hits a MANE Plus Clinical isoform -- which is exactly why that tier exists. The Ensembl "canonical" transcript is frequently NOT the MANE Select one, so migrating a pipeline to MANE changes some reported c. coordinates (expected, not erroneous). MANE is GRCh38-only; GRCh37 pipelines must lift over or maintain their own per-gene transcript pins.
 
-**Why `--pick` is dangerous for clinical use.** VEP by default reports all consequences for all overlapping transcripts. `--pick` collapses to one block per variant using an ordered heuristic whose defaults are canonical status, biotype, consequence rank, then transcript length, then finally accession order. The late tiebreakers are not clinically motivated: when transcripts tie, `--pick` can let transcript length or alphanumeric `ENST` order decide which consequence a real patient gets, can pick per-variant (so variant A and variant B in one gene land on different transcripts, destroying coordinate consistency), and can silently hide a PVS1-eligible consequence behind a benign one. Defensible configurations: pin MANE Select (with Plus Clinical), or pin the lab's validated per-gene list. If `--pick`-style collapse is used at all, constrain it so MANE leads and length/accession never decide:
+**Why `--pick` is dangerous for clinical use.** VEP by default reports all consequences for all overlapping transcripts. `--pick` collapses to one block per variant using an ordered heuristic; since VEP 110 the default `--pick_order` is `mane_select,mane_plus_clinical,canonical,appris,tsl,biotype,ccds,rank,length,ensembl,refseq` (checked in VEP 114.2 `Config.pm`), so older releases without the MANE tiers fell through to canonical status, biotype, rank, then transcript length and accession order. The late tiebreakers are not clinically motivated: when transcripts tie, `--pick` can let transcript length or alphanumeric `ENST` order decide which consequence a real patient gets, can pick per-variant (so variant A and variant B in one gene land on different transcripts, destroying coordinate consistency), and can silently hide a PVS1-eligible consequence behind a benign one. Defensible configurations: pin MANE Select (with Plus Clinical), or pin the lab's validated per-gene list. If `--pick`-style collapse is used at all, constrain it so MANE leads and length/accession never decide:
 
 ```bash
 # --pick_order forces MANE first; length/accession can no longer choose the reported transcript
 vep -i norm.vcf --vcf --cache --offline --assembly GRCh38 \
-    --mane_select --pick --pick_order mane_select,canonical,biotype,rank -o out.vcf
+    --mane_select --pick --pick_order mane_select,mane_plus_clinical,canonical,biotype,rank -o out.vcf
 ```
 
 ## Consequence, impact, and NMD (the PVS1 hinge)
@@ -134,9 +134,12 @@ table_annovar.pl norm.vcf humandb/ -buildver hg38 -out annotated -remove \
 **Approach:** `csq` maps variants to a GFF3 and emits a `BCSQ` field; `annotate -c` copies ID/INFO columns from a position-matched source.
 
 ```bash
-bcftools csq -f reference.fa -g genes.gff3.gz norm.vcf.gz -Oz -o csq.vcf.gz   # adds BCSQ
-bcftools annotate -a dbsnp.vcf.gz -c ID norm.vcf.gz -Oz -o rsid.vcf.gz        # copy rsIDs
+bcftools csq -p a -f reference.fa -g genes.gff3.gz norm.vcf.gz -Oz -o csq.vcf.gz   # adds BCSQ
+bcftools annotate -a dbsnp.vcf.gz -c ID norm.vcf.gz -Oz -o rsid.vcf.gz             # copy rsIDs
+bcftools annotate -a gnomad.vcf.gz -c INFO/gnomAD_FAF:=INFO/fafmax_faf95_max rsid.vcf.gz -Oz -o af.vcf.gz  # new tag
 ```
+
+`csq` defaults to `-p r` and exits on the first unphased het; `-p a` assumes all hets are in cis and merges nearby hets in a transcript into one consequence (a frameshift can absorb a downstream stop), `-p m` merges only phased hets, `-p s` keeps unphased hets separate. `annotate -a <vcf>` needs an indexed target file (not a pipe). Annotate database frequencies into a new tag: copying into `INFO/AF` keeps the input's own AF wherever the source has no record, so "absent from gnomAD" can no longer be detected.
 
 See usage-guide.md for BED/TAB annotation, field removal, `--set-id`, chromosome renaming, and database download recipes.
 
@@ -154,9 +157,9 @@ Therefore: use exactly ONE calibrated predictor per evidence type (missense; spl
 | SIFT / PolyPhen-2 (Ng 2003 *NAR* 31:3812; Adzhubei 2010 *Nat Methods* 7(4):248) | missense | Do not use as standalone evidence -- see below |
 | SpliceAI (Jaganathan 2019 *Cell* 176(3):535-548) | splice-altering | The splicing predictor; delta-score interpretation below |
 
-**SIFT/PolyPhen alone are near-worthless now.** In the ClinGen SVI calibration (Pejaver 2022 *Am J Hum Genet* 109(12):2163-2177) neither reached even Supporting strength for PP3; both call a large fraction of all missense "damaging" (low positive predictive value on rare variants); and both are components of REVEL, so quoting them alongside it double-counts. Legacy pipelines surfacing "SIFT: deleterious, PolyPhen: probably damaging" prominently are decorative, not evidentiary.
+**SIFT/PolyPhen at developer thresholds are near-worthless now.** In the ClinGen SVI calibration (Pejaver 2022 *Am J Hum Genet* 109(12):2163-2177) the developer-recommended "deleterious"/"probably damaging" calls did not reach Supporting strength for PP3; only calibrated intervals do (PolyPhen-2 PP3_Supporting [0.978, 0.999), PP3_Moderate >= 0.999; Table 2); both call a large fraction of all missense "damaging" (low positive predictive value on rare variants); and both are components of REVEL, so quoting them alongside it double-counts. Legacy pipelines surfacing "SIFT: deleterious, PolyPhen: probably damaging" prominently are decorative, not evidentiary.
 
-**CADD >= 20 is not "pathogenic."** In Pejaver 2022 raw CADD did not reach Supporting for PP3, and the developer-recommended CADD >= 20 mapped to Moderate evidence for **benign** -- an inversion of how CADD 20 is casually used. Reserve CADD for its intended non-coding/genome-wide ranking.
+**CADD >= 20 is not "pathogenic."** In Pejaver 2022 the developer-recommended CADD >= 20 did not reach Supporting for PP3 and mapped to Moderate evidence for **benign** -- an inversion of how CADD 20 is casually used. Calibrated CADD intervals do reach PP3_Supporting [25.3, 28.1) and PP3_Moderate >= 28.1 (Table 2). Reserve CADD for its intended non-coding/genome-wide ranking.
 
 **Calibrated REVEL thresholds (Pejaver 2022).** PP3_Supporting >= 0.644 and BP4_Supporting <= 0.290 are the well-reproduced values. The Moderate/Strong REVEL cutoffs (commonly quoted as PP3_Moderate >= 0.773, PP3_Strong >= 0.932; BP4_Moderate <= 0.183, BP4_Strong <= 0.016) come from the supplementary tables and are not uniformly reproduced -- verify against the Pejaver 2022 supplement / current ClinGen SVI recommendation table before hard-coding, rather than treating them as fixed. PP3 and BP4 are mutually exclusive by construction; only tools reaching >= Strong in the calibration qualify.
 
@@ -216,7 +219,7 @@ bcftools index "${OUT}_norm.vcf.gz"
 # --mane_select + constrained --pick_order so MANE leads and length/accession never decide
 vep -i "${OUT}_norm.vcf.gz" -o "${OUT}_vep.vcf" \
     --vcf --cache --offline --dir_cache "$VEP_CACHE" --assembly GRCh38 \
-    --everything --mane_select --pick --pick_order mane_select,canonical,biotype,rank --fork 4
+    --everything --mane_select --pick --pick_order mane_select,mane_plus_clinical,canonical,biotype,rank --fork 4
 
 bgzip "${OUT}_vep.vcf" && bcftools index "${OUT}_vep.vcf.gz"
 bcftools view -i 'INFO/CSQ~"HIGH" || INFO/CSQ~"MODERATE"' \

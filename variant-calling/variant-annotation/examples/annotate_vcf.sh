@@ -24,10 +24,15 @@ for vcf in "$INPUT" "$DBSNP"; do
 done
 
 echo "Adding rsIDs from dbSNP..."
-if [ -n "$GNOMAD_VCF" ] && [ -f "$GNOMAD_VCF" ]; then
-    echo "Adding population frequencies from gnomAD..."
-    bcftools annotate -a "$DBSNP" -c ID "$INPUT" | \
-        bcftools annotate -a "$GNOMAD_VCF" -c INFO/AF -Oz -o "$OUTPUT"
+if [ -n "${GNOMAD_VCF:-}" ] && [ -f "$GNOMAD_VCF" ]; then
+    echo "Adding population frequencies from gnomAD (INFO/gnomAD_AF)..."
+    # annotate -a <vcf> needs an indexed target, so it cannot read the previous step from a pipe.
+    IDS="${OUTPUT%.vcf.gz}.ids.vcf.gz"
+    bcftools annotate -a "$DBSNP" -c ID "$INPUT" -Oz -o "$IDS"
+    bcftools index -f "$IDS"
+    # New tag: copying into INFO/AF would keep the input's own AF where gnomAD has no record.
+    bcftools annotate -a "$GNOMAD_VCF" -c INFO/gnomAD_AF:=INFO/AF "$IDS" -Oz -o "$OUTPUT"
+    rm -f "$IDS" "$IDS.csi"
 else
     bcftools annotate -a "$DBSNP" -c ID "$INPUT" -Oz -o "$OUTPUT"
 fi
