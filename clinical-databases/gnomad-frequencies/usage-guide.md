@@ -19,7 +19,7 @@ gcloud auth application-default login
 Tell the agent what to do:
 - "What is the v4 grpmax FAF95 for this variant? Apply ACMG BS1/BA1"
 - "Filter my VCF to variants with grpmax FAF95 < 0.0001 using gnomAD v4 Hail Table"
-- "Get LOEUF for these 50 candidate disease genes; note v4 has no chrX/Y constraint"
+- "Get LOEUF for these 50 candidate disease genes from the v4 constraint"
 - "Compute Whiffin max-credible-AF for hypertrophic cardiomyopathy and apply BS1 to my variant list"
 - "Compare v2 vs v4 AF for this variant and reconcile the discrepancy"
 
@@ -27,7 +27,7 @@ Tell the agent what to do:
 
 ### Single Variant Frequency
 
-> "Look up chr17:43094464:G:A in gnomAD v4. Report exome AF, grpmax FAF95, grpmax ancestry, and apply BS1 against breast-cancer-specific max-credible-AF."
+> "Look up chr17:43106487:A:C in gnomAD v4. Report exome AF, grpmax FAF95, grpmax ancestry, and apply BS1 against breast-cancer-specific max-credible-AF."
 
 > "What is the gnomAD v4 grpmax FAF95 for rs334 (HbS)? Note: this is a founder allele in AFR, so check that bottleneck groups are excluded properly."
 
@@ -35,7 +35,7 @@ Tell the agent what to do:
 
 ### Constraint Metrics
 
-> "Pull LOEUF for these 30 candidate genes. Use v4 March 2024 release for autosomes; fall back to v2.1.1 for chrX/Y."
+> "Pull LOEUF for these 30 candidate genes. Use the v4 constraint; fall back to v2.1.1 only for genes where v4 returns none."
 
 > "Rank my candidate gene list by LOEUF decile (first decile = strongly LoF-intolerant)."
 
@@ -74,7 +74,7 @@ Tell the agent what to do:
 3. Extract grpmax FAF95 (not raw AF) for ACMG application.
 4. Apply Whiffin max-credible-AF formula when gene-specific BS1 needed; default BA1 = 5% per ClinGen SVI.
 5. Cross-check bottleneck-group inclusion (AMI/ASJ/FIN/REMAINING excluded from grpmax by design).
-6. For chrX/Y constraint, fall back to v2.1.1 (v4 not released).
+6. Confirm the coordinate build matches the dataset (v4 = GRCh38, v2.1.1 = GRCh37) before reading "Variant not found" as absent.
 7. Pin VEP version (v4 = VEP 105; v2 = VEP 85) for consequence prediction reproducibility.
 
 ## Tips
@@ -83,7 +83,7 @@ Tell the agent what to do:
 - v4 genomes are the same 76,215 v3 samples reprocessed; not independent; for true non-overlap use `non_v2` subset.
 - v4 includes 416,555 UK Biobank exomes; for ancestry-balanced analysis use `non_ukb` subset.
 - LOEUF first decile = strongly LoF-intolerant; threshold shifted v2 < 0.35 -> v4 < 0.6 due to larger sample. Compare deciles, not absolute values.
-- v4 constraint release (March 2024) is autosomes only; chrX/Y constraint requires v2.1.1.
+- The v4 API returns constraint for chrX genes (DMD LOEUF 0.235, checked 2026-09-15); fall back to v2.1.1 only when v4 returns none.
 - gnomAD-SV v4 = GRCh38, 63,046 samples; gnomAD-CNV v4 = 464,297 exome-derived CNVs. Choose by data type.
 - mtDNA frequencies exist only in v3.1.2 (Laricchia 2022); apply non-Mendelian inheritance carefully.
 - Filtering allele frequency formula: `(prevalence x heterogeneity x allelic_contribution) / (penetrance x 2)`. Gene-specific BS1.

@@ -1,6 +1,6 @@
 ---
 name: bio-clinical-databases-gnomad-frequencies
-description: Queries gnomAD v4 (807k samples), v3, v2.1.1, and constraint metrics with grpmax FAF95, bottleneck-group exclusion, LOEUF interpretation, SV/CNV/mtDNA catalogs, and Whiffin max-credible-AF framework. Use when filtering rare variants, applying ACMG BS1/BA1, ranking genes by LoF intolerance, or selecting between v2 (GRCh37 + chrX/Y constraint) and v4 (GRCh38 + 807k samples).
+description: Queries gnomAD v4 (807k samples), v3, v2.1.1, and constraint metrics with grpmax FAF95, bottleneck-group exclusion, LOEUF interpretation, SV/CNV/mtDNA catalogs, and Whiffin max-credible-AF framework. Use when filtering rare variants, applying ACMG BS1/BA1, ranking genes by LoF intolerance, or selecting between v2 (GRCh37) and v4 (GRCh38 + 807k samples).
 tool_type: python
 primary_tool: requests
 ---
@@ -20,8 +20,10 @@ If code throws ImportError, AttributeError, or TypeError, introspect the install
 **'How rare is this variant in the general population?'** -> Pull allele frequency, grpmax FAF95 (the ACMG-grade frequency), LOEUF gene-level constraint, structural variant catalog, mtDNA frequencies, and the appropriate dataset version per use case.
 
 - Python (single variant): GraphQL via `requests.post('https://gnomad.broadinstitute.org/api', json={'query': ..., 'variables': ...})`
-- Python (aggregator): `myvariant.MyVariantInfo().getvariant(hgvs, fields=['gnomad_exome', 'gnomad_genome'])`
+- Python (aggregator): `myvariant.MyVariantInfo().getvariant(hgvs, fields=['gnomad_exome', 'gnomad_genome'])` -- gnomAD 2.1.1 (GRCh37) raw AF only, no FAF95 (myvariant metadata, 2026-09-15)
 - Python (bulk): `hl.read_table('gs://gcp-public-data--gnomad/release/4.1/ht/exomes/gnomad.exomes.v4.1.sites.ht')`
+
+**Data governance:** sending variants derived from patients or research participants to a public API, or processing their exomes in cloud Hail, can disclose them. Do it only under the cohort's consent and institutional approvals, in an approved environment.
 
 ## v2.1.1 / v3.1.2 / v4.x: When to Use Which
 
@@ -29,9 +31,9 @@ This is the most consequential decision in any gnomAD query. The releases are **
 
 | Release | Build | Samples | Use when | Fails when |
 |---------|-------|---------|----------|-----------|
-| **v2.1.1** | GRCh37 | 125,748 exomes + 15,708 genomes | Constraint metrics needed (LOEUF v2 most-validated); chrX/Y constraint required; GRCh37 native non-negotiable | GRCh38 native cohort; modern rare-variant FAF95 (use v4) |
+| **v2.1.1** | GRCh37 | 125,748 exomes + 15,708 genomes | Constraint metrics needed (LOEUF v2 most-validated); GRCh37 native non-negotiable | GRCh38 native cohort; modern rare-variant FAF95 (use v4) |
 | **v3.1.2** | GRCh38 | 76,156 genomes (NO exomes) | Non-coding region rare variants on GRCh38; mtDNA frequencies | Exome variants needed (no exomes); 76k cohort smaller than v4 |
-| **v4.0/v4.1** | GRCh38 | 730,947 exomes + 76,215 genomes = **807,162 total** | Default for everything; rare-variant filtering, FAF95, gene queries | chrX/Y constraint (not released); cancer-cohort analysis (no TCGA in v4) |
+| **v4.0/v4.1** | GRCh38 | 730,947 exomes + 76,215 genomes = **807,162 total** | Default for everything; rare-variant filtering, FAF95, gene queries | GRCh37 coordinates (lift over or use v2.1.1); cancer-cohort analysis (no TCGA in v4) |
 
 **Critical caveats:**
 - v4 genomes are the SAME 76,215 v3 samples reprocessed against GRCh38 with updated pipelines; not independent.
@@ -75,7 +77,7 @@ Karczewski 2020 *Nature* 581:434 defined LOEUF as the upper bound of the 90% CI 
 
 **Critical version mismatch:**
 - v2.1.1 constraint metrics published 2020; v4 constraint published **March 2024** (4 months after v4 data release).
-- **v4 constraint is autosomes only; chrX and chrY constraint metrics in v4 are NOT released**. For X/Y constraint, fall back to v2.1.1.
+- The browser API returns constraint for chrX genes on GRCh38 (DMD LOEUF 0.235, checked 2026-09-15). If `gnomad_constraint` comes back null for a gene, fall back to v2.1.1 (`reference_genome: GRCh37`) and say so.
 - **LOEUF first decile shifted v2 to v4**: v2 < 0.35; v4 < 0.6 (larger sample shifted the distribution). Gene rank in deciles is stable across versions but absolute thresholds are NOT interchangeable.
 
 ## Subsets: non_cancer, non_neuro, controls
@@ -117,10 +119,10 @@ A variant's consequence prediction can flip between v2 and v4 due to MANE Select
 
 | Scenario | Recommended path | Why |
 |----------|------------------|-----|
-| Single variant AF lookup | GraphQL API or myvariant.info | Lowest latency; returns full per-ancestry breakdown |
+| Single variant AF lookup | GraphQL API (myvariant.info carries gnomAD 2.1.1 only, no FAF95) | Lowest latency; returns full per-ancestry breakdown |
 | ACMG BS1/BA1 application | `grpmax_faf95` from v4 | The ClinGen-recommended field |
-| Gene-level LoF constraint (autosomes) | LOEUF from v4 March 2024 release | Larger sample, more stable |
-| Gene-level LoF constraint (chrX/Y) | LOEUF from v2.1.1 | v4 X/Y constraint NOT released |
+| Gene-level LoF constraint | LOEUF from the GRCh38 (v4) gene query | Larger sample, more stable |
+| Gene-level constraint null in v4 | LOEUF from v2.1.1 (`reference_genome: GRCh37`) | Fallback only when v4 returns no constraint |
 | Bulk rare-variant filter (cohort-scale) | Hail Table on GCS | No rate limits; full schema |
 | SV frequency | gnomAD-SV v4 (WGS) or gnomAD-CNV v4 (exome) | Choose by data type |
 | mtDNA frequency | v3.1 mtDNA release (Laricchia 2022) | Only gnomAD release with mtDNA |
@@ -137,12 +139,19 @@ A variant's consequence prediction can flip between v2 and v4 due to MANE Select
 import requests
 
 GNOMAD_API = 'https://gnomad.broadinstitute.org/api'
+DATASET_BUILD = {'gnomad_r4': 'GRCh38', 'gnomad_r3': 'GRCh38', 'gnomad_r2_1': 'GRCh37'}
 
-def query_variant(chrom, pos, ref, alt, dataset='gnomad_r4'):
+def query_variant(chrom, pos, ref, alt, build, dataset='gnomad_r4'):
     '''Query gnomAD GraphQL for variant frequency + grpmax FAF95.
 
-    dataset options: gnomad_r4 (v4.1, default), gnomad_r3, gnomad_r2_1
+    build: 'GRCh38' or 'GRCh37', the build of the coordinates; checked against the dataset
+    (gnomad_r4 / gnomad_r3 = GRCh38, gnomad_r2_1 = GRCh37). GRCh37 ids sent to gnomad_r4 return
+    "Variant not found", the same answer as a truly absent variant.
+    Returns the variant payload, or None when the variant is not in this dataset; raises on any
+    other GraphQL error.
     '''
+    if DATASET_BUILD[dataset] != build:
+        raise ValueError(f'{dataset} is {DATASET_BUILD[dataset]} but the coordinates are {build}')
     query = '''
     query VariantById($variantId: String!, $dataset: DatasetId!) {
       variant(variantId: $variantId, dataset: $dataset) {
@@ -174,26 +183,26 @@ def query_variant(chrom, pos, ref, alt, dataset='gnomad_r4'):
                       json={'query': query, 'variables': {'variantId': variant_id, 'dataset': dataset}},
                       timeout=30)
     r.raise_for_status()
-    return r.json().get('data', {}).get('variant')
+    body = r.json()
+    errors = [e.get('message') for e in body.get('errors') or []]
+    if errors and errors != ['Variant not found']:
+        raise RuntimeError(f'gnomAD GraphQL error for {variant_id} ({dataset}): {errors}')
+    return (body.get('data') or {}).get('variant')
 
 
 def grpmax_faf95(payload):
-    '''Extract the grpmax FAF95; the ACMG-grade frequency. Excludes bottleneck groups.'''
-    exome = payload.get('exome') if payload else None
-    if exome and exome.get('faf95'):
-        return {
-            'faf95': exome['faf95'].get('popmax'),
-            'grpmax_ancestry': exome['faf95'].get('popmax_population'),
-            'source': 'exome'
-        }
-    genome = payload.get('genome') if payload else None
-    if genome and genome.get('faf95'):
-        return {
-            'faf95': genome['faf95'].get('popmax'),
-            'grpmax_ancestry': genome['faf95'].get('popmax_population'),
-            'source': 'genome'
-        }
-    return {'faf95': 0.0, 'grpmax_ancestry': None, 'source': 'absent'}
+    '''Extract the grpmax FAF95; the ACMG-grade frequency. Excludes bottleneck groups.
+
+    faf95 is None both for absent variants (source='absent') and for present variants whose FAF95
+    is undefined because too few alleles were seen (source='present_faf95_undefined', e.g. AC=1).
+    '''
+    if payload is None:
+        return {'faf95': None, 'grpmax_ancestry': None, 'source': 'absent'}
+    for source in ('exome', 'genome'):
+        faf = (payload.get(source) or {}).get('faf95') or {}
+        if faf.get('popmax') is not None:
+            return {'faf95': faf['popmax'], 'grpmax_ancestry': faf.get('popmax_population'), 'source': source}
+    return {'faf95': None, 'grpmax_ancestry': None, 'source': 'present_faf95_undefined'}
 ```
 
 ## ACMG BS1/BA1 Application
@@ -223,6 +232,8 @@ def apply_bs1_ba1(grpmax_faf95_val, max_credible, ba1_threshold=0.05):
 
     BA1 default 5% per ClinGen SVI; VCEP-specific overrides exist (Hearing Loss = 0.5%).
     BS1 = max-credible-AF specific to gene+disease.
+    grpmax_faf95_val None = absent, or present with FAF95 undefined (see grpmax_faf95()['source']).
+    These are research annotation tags for a variant, not a classification.
     '''
     if grpmax_faf95_val is None:
         return 'PM2_Supporting'  # Absent or ultra-rare
@@ -235,13 +246,13 @@ def apply_bs1_ba1(grpmax_faf95_val, max_credible, ba1_threshold=0.05):
 
 ## Gene-Level Constraint (LOEUF)
 
-**Goal:** Retrieve gene constraint metrics with awareness of version mismatch for chrX/Y.
+**Goal:** Retrieve gene constraint metrics with awareness of v2/v4 version differences.
 
-**Approach:** Use v4 LOEUF for autosomes; fall back to v2.1.1 for chrX/Y. Report LOEUF decile, not raw value, to avoid cross-version comparison errors.
+**Approach:** Use the GRCh38 (v4) LOEUF; fall back to v2.1.1 only when v4 returns no constraint. Report LOEUF decile, not raw value, to avoid cross-version comparison errors.
 
 ```python
 def query_gene_constraint(gene_symbol, dataset='gnomad_r4'):
-    '''Pull gene constraint metrics. Note: v4 has no chrX/Y constraint; use v2 fallback.'''
+    '''Pull gene constraint metrics (chrX genes included: DMD LOEUF 0.235 on 2026-09-15).'''
     query = '''
     query GeneById($symbol: String!) {
       gene(gene_symbol: $symbol, reference_genome: GRCh38) {
@@ -267,9 +278,9 @@ def query_gene_constraint(gene_symbol, dataset='gnomad_r4'):
     gene = r.json().get('data', {}).get('gene')
     if gene is None:
         return None
-    if gene.get('chrom') in ('X', 'Y'):
-        gene['constraint_note'] = ('v4 constraint NOT released for chrX/Y; query v2.1.1 '
-                                   'via gnomad_r2_1 dataset on the v2 endpoint')
+    if gene.get('gnomad_constraint') is None:
+        gene['constraint_note'] = ('no constraint returned for this gene; try the v2.1.1 values '
+                                   'with reference_genome: GRCh37')
     return gene
 ```
 
@@ -315,11 +326,11 @@ def filter_rare_variants_hail(input_vcf, max_grpmax_faf95=0.0001, output_path='f
 - Symptom: Founder-population pathogenic variants reported benign.
 - Fix: Use gnomAD's pre-computed `grpmax_faf95` which excludes bottleneck groups by design.
 
-**3. Querying v4 constraint for chrX/Y**
-- Trigger: Pull LOEUF for DMD or USP9Y from v4 release.
-- Mechanism: v4 March 2024 constraint release excluded sex chromosomes.
-- Symptom: Missing or stale constraint metrics for X/Y genes.
-- Fix: Query v2.1.1 LOEUF for chrX/Y; use v4 for autosomes; report LOEUF decile rather than raw value.
+**3. GRCh37 coordinates sent to a GRCh38 dataset**
+- Trigger: Query `gnomad_r4` with GRCh37 positions (e.g. rs334 as 11-5248232-T-A).
+- Mechanism: The API answers `{"errors": [{"message": "Variant not found"}], "data": {"variant": null}}`; reading only `data` turns a build mismatch into "absent".
+- Symptom: A common variant is reported absent from gnomAD.
+- Fix: Check the build first; surface the GraphQL `errors` array; query `gnomad_r2_1` for GRCh37 or lift over to GRCh38 (rs334 = 11-5227002-T-A).
 
 **4. Comparing LOEUF absolute values across v2/v4**
 - Trigger: "v4 LOEUF for GENE-X is 0.45; v2 was 0.30; has it become more tolerant?"
@@ -382,7 +393,8 @@ def filter_rare_variants_hail(input_vcf, max_grpmax_faf95=0.0001, output_path='f
 | Symptom | Cause | Solution |
 |---------|-------|----------|
 | `Cannot read property 'af' of undefined` | Variant not in dataset; `variant` returned null | Check `if payload is None`; absence is biologically informative |
-| FAF95 = 0 for a known common variant | `grpmax_faf95` only computed when AN sufficient | Check AC and AN directly; FAF95 is 0 when N too low to estimate |
+| FAF95 is null for a present variant | FAF95 is undefined when too few alleles are observed (AC=1 exome: `popmax: null`) | Check AC and AN directly; do not read null as absent |
+| `variant` null with `errors: Variant not found` | Not in this dataset, or GRCh37 coordinates sent to a GRCh38 dataset | Confirm the build; `query_variant` requires it |
 | Variant filter status `AC0` or `RF` | Failed gnomAD QC | Variants with non-`PASS` should usually be excluded from analysis |
 | Different AFs between gnomAD browser and Hail Table | Browser auto-applies PASS filter; Hail does not | Filter `filters.size() == 0` (i.e., `PASS`) in Hail |
 | LOEUF appears worse in v4 vs v2 | Distribution shifted with larger sample | Compare deciles, not absolute values |
@@ -396,7 +408,6 @@ def filter_rare_variants_hail(input_vcf, max_grpmax_faf95=0.0001, output_path='f
 | "Why FAF95 instead of AF?" | Raw AF is point estimate; FAF95 is Poisson lower-bound 95% CI; ClinGen SVI recommendation for BS1/BA1. |
 | "Why exclude FIN and ASJ from grpmax?" | Founder-population pathogenic variants reach high AF locally; including them would trigger false BA1. |
 | "This LOEUF differs from the 2020 paper" | We use v4 March 2024 constraint (807k samples); 2020 paper used v2 (141k samples). Decile rank is stable; absolute shifted. |
-| "Why not v4 for chrX constraint?" | v4 March 2024 constraint release is autosomes only; chrX/Y not yet released as of 2025. Fall back to v2. |
 | "Why v3 if v4 exists?" | v4 genomes = v3 genomes reprocessed; for genome-only analysis they are equivalent. |
 | "Variant exists in liftover v2 but not v4" | ~0.5-1% of sites differ post-assembly fixes; use v4 native, not liftover, as ground truth. |
 | "Browser AF higher than this value" | Browser includes flagged variants by default; we filter on PASS. |
