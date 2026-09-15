@@ -17,7 +17,7 @@ Before using code patterns, verify installed versions match. If versions differ:
 If code throws ImportError, AttributeError, or TypeError, introspect the installed
 package and adapt the example to match the actual API rather than retrying.
 
-The MrBayes default branch-length prior changed at 3.2.3 from `unconstrained:exp(10)` to the compound `unconstrained:gammadir`; do not assume the old default on any version. `stoprule`/`stopval` auto-halt on ASDSF.
+The MrBayes default branch-length prior changed at 3.2.3 from `unconstrained:exp(10)` to the compound `unconstrained:gammadir`; do not assume the old default on any version. `stoprule`/`stopval` auto-halt on ASDSF only (topology), not on scalar ESS. Commands below checked on MrBayes 3.2.7a.
 
 # Bayesian Phylogenetic Inference -- A Posterior Over Trees Conditioned on Priors; an Unconverged Run Is Confident Nonsense
 
@@ -68,7 +68,7 @@ Almost all Bayesian-phylo failures live here, and the non-obvious core is that s
 What each diagnostic measures:
 - ESS (effective sample size) = N / integrated autocorrelation time. Check PER parameter (the likelihood can have ESS=2000 while a nuisance rate has ESS=12). Tracer flags <200 yellow, <100 red.
 - PSRF (Gelman-Rubin Rhat) compares between-run to within-run variance across >=2 runs; PSRF -> 1.00 at convergence. Requires multiple runs. Scalar-only (Question A).
-- ASDSF (average standard deviation of split frequencies) = THE between-run topology metric in MrBayes, computed automatically when `nruns>=2`: for each bipartition above a minimum frequency, take the SD of its frequency across runs and average. Converged runs give the same frequency in both -> ASDSF -> 0. Printed live during `mcmc`; `stoprule=yes stopval=0.01` auto-halts. Companion: the MAX split-freq diff (worst single split) catches one unsettled clade that a low average hides.
+- ASDSF (average standard deviation of split frequencies) = THE between-run topology metric in MrBayes, computed automatically when `nruns>=2`: for each bipartition above a minimum frequency, take the SD of its frequency across runs and average. Converged runs give the same frequency in both -> ASDSF -> 0. Printed live during `mcmc`; `stoprule=yes stopval=0.01` auto-halts on it, which is a topology-only criterion (see below). Companion: the MAX split-freq diff (worst single split) catches one unsettled clade that a low average hides.
 - Multiple independent runs are mandatory: PSRF and ASDSF are between-run metrics, undefined with one run, and a single run can look perfectly stationary on a local peak. A single long run is never sufficient evidence of convergence.
 - MC3 (Metropolis-coupled MCMC) is MrBayes' defense against tree-space trapping: 1 cold chain (sampled) + heated chains whose flattened posterior crosses valleys, with periodic state swaps. Tuning signal is the chain-swap acceptance rate (target ~20-70%); if near 0, chains too far apart -> lower `temp`; near 100%, too similar -> raise `temp`. BEAST2 and PhyloBayes do not use MC3 by default.
 
@@ -84,7 +84,7 @@ Convergence checklist (all must pass before shipping):
 
 Defaults are not neutral. The branch-length prior is the one that changes conclusions. The classic MrBayes default before 3.2.3 put an i.i.d. Exponential(10) prior on each branch with no control over the SUM, so as taxon number grows the implied prior on total tree length grows and the posterior is pulled toward implausibly long trees with degraded mixing -- and the inflation can feed back into TOPOLOGY and node support, so it is not cosmetic (Brown 2010). The fix is the compound (gamma-)Dirichlet prior (Zhang 2012): a diffuse Gamma on the whole tree length, partitioned among branches by a Dirichlet, decoupling "how long is the tree" from "how is length distributed". It yields posterior tree lengths close to the ML estimate and is robust to its hyperparameters; it became the MrBayes default at 3.2.3+. Rule: never trust a default `exp(10)` brlenspr on datasets with many taxa or long branches -- use `unconstrained:gammadir(...)`; inflated tree length vs an ML reference points first at the branch-length prior. Two further notes: a uniform topology prior is NOT uniform on clades; and Bayes-factor model comparison is only valid under PROPER priors (an unbounded "uninformative" prior leaves the marginal likelihood undefined).
 
-The star-tree paradox and short-internode overconfidence: when the true internal branch is near zero (an effective polytomy), PP does NOT settle toward the uninformative 1/3 among the three resolutions as data accumulate -- it behaves erratically and can drive toward HIGH support for an arbitrary resolution (Lewis 2005; the theory in Yang 2007). So a high PP on a clade subtended by a very short internal branch is exactly where Bayesian support is least trustworthy. Treat near-zero internodes as soft, cross-check against bootstrap, and consider a polytomy-allowing reversible-jump prior (Lewis 2005).
+The star-tree paradox and short-internode overconfidence: when the true internal branch is near zero (an effective polytomy), PP does NOT settle toward the uninformative 1/3 among the three resolutions as data accumulate -- it behaves erratically and can drive toward HIGH support for an arbitrary resolution (Lewis 2005; the theory in Yang 2007). So a high PP on a clade subtended by a very short internal branch is exactly where Bayesian support is least trustworthy. Treat near-zero internodes as soft and cross-check against bootstrap. The polytomy-allowing reversible-jump prior of Lewis 2005 is not available in MrBayes 3.2.7a (`prset topologypr` offers only uniform/speciestree/constraints/fixed), so on MrBayes report such a node as an effective polytomy rather than trying to fix it with a prior.
 
 ## Model Comparison Done Right
 
@@ -100,17 +100,22 @@ The harmonic-mean estimator (HME) is discredited and must never select a model. 
 
 ```
 begin mrbayes;
+    set seed=12345 swapseed=67890;                      [ record seeds for reproducibility ]
     lset nst=6 rates=invgamma;                          [ GTR+I+G; nst=mixed = rjMCMC model averaging ]
     prset brlenspr=unconstrained:gammadir(1,0.1,1,1);   [ compound Dirichlet, NOT exp(10): avoids tree-length inflation ]
     mcmc ngen=10000000 nruns=2 nchains=4 temp=0.1       [ 2 runs x (1 cold + 3 heated MC3 chains) ]
          samplefreq=1000 printfreq=1000 diagnfreq=5000
-         stoprule=yes stopval=0.01;                     [ auto-halt when ASDSF < 0.01 (topology converged) ]
+         stoprule=no;                                   [ run the full ngen; do NOT auto-halt on ASDSF ]
     sump burninfrac=0.25 relburnin=yes;                 [ scalar PSRF + ESS, discarding first 25% ]
     sumt burninfrac=0.25 relburnin=yes;                 [ consensus tree + clade PP + ASDSF ]
 end;
 ```
 
-After the run: confirm `sump` PSRF ~ 1.00 and ESS > 200 for every parameter, `sumt` ASDSF < 0.01 with a small max split-freq diff, and check tree-space convergence with RWTY (`analyze.rwty(list(run1=..., run2=...), burnin=25)`, then `makeplot.treespace`). Distrust any clade where PP is high but the bootstrap or concordance factor (modern-tree-inference) is low.
+Do not use `stoprule=yes stopval=0.01` as the convergence gate: it checks ASDSF (topology) only, and on easy topologies ASDSF reaches 0 at the first diagnostic while scalars are barely sampled (checked on MrBayes 3.2.7a: halted at generation 5,000 with minimum ESS < 10; a larger `diagnfreq` still halted with an ESS of 42). If `sump` shows any ESS < 200, extend the same runs rather than restarting: `mcmc append=yes ngen=<new total>;` (ngen is the new TOTAL generation count, not the increment), then rerun `sump`/`sumt`.
+
+After the run: confirm `sump` PSRF ~ 1.00 and ESS > 200 for every parameter, `sumt` ASDSF < 0.01 with a small max split-freq diff, and check tree-space convergence with RWTY (`analyze.rwty(list(run1=..., run2=...), burnin=round(0.25 * length(run1$trees)))`, then `makeplot.treespace`; rwty's `burnin` is a number of trees, not a percentage). Distrust any clade where PP is high but the bootstrap or concordance factor (modern-tree-inference) is low.
+
+Prior-only run for the prior-sensitivity check: same `lset`/`prset`, then `mcmc data=no ngen=... filename=prioronly;` and compare its `sump` (e.g. tree length) with the data run.
 
 ### Compare Two Models by Stepping-Stone
 
@@ -120,10 +125,12 @@ After the run: confirm `sump` PSRF ~ 1.00 and ESS > 200 for every parameter, `su
 
 ```
 [ run once per model on the same proper priors; nsteps = power-posterior stones ]
-ss ngen=1000000 nsteps=50 diagnfreq=1000;
+ss ngen=1000000 nsteps=50 samplefreq=100 diagnfreq=1000;
 [ MrBayes prints the stepping-stone marginal log-likelihood; record it per model ]
 [ 2 lnBF = 2 * (lnML_model1 - lnML_model2); interpret on the Kass-Raftery scale ]
 ```
+
+Samples per step = ngen / (nsteps + 1) / samplefreq (MrBayes prints "N steps will be used with G generations (S samples) within each step"); keep S at roughly 30-50 or more, so raise `ngen` when you raise `samplefreq`. Defaults on 3.2.7a: `alpha=0.4` (beta values from quantiles of Beta(alpha,1)), `burninss=-1` (one step's worth of generations discarded before the first step).
 
 BEAST2: install the `MODEL_SELECTION` package and run `PathSampler` (path sampling / stepping-stone); RevBayes: `powerPosterior()` + `steppingStoneSampler()`. All require proper priors, or the marginal likelihood is undefined.
 
@@ -204,8 +211,10 @@ tracecomp -x 1000 chain1 chain2     # effsize + rel_diff (scalars)
 | Model choice flips on rerun | harmonic-mean estimator used | use stepping-stone / path sampling |
 | Bayes factor is undefined / arbitrary | an improper "uninformative" prior | make all priors proper before SS/PS |
 | PP = 1.0 on an LBA clade at depth | site-heterogeneous data under a homogeneous model | use PhyloBayes CAT-GTR or IQ-TREE PMSF |
-| High PP on a near-zero internode | star-tree paradox fabricates resolution | treat the internode as soft; consider a polytomy prior |
+| High PP on a near-zero internode | star-tree paradox fabricates resolution | treat the internode as soft; report as an effective polytomy |
 | Low ESS after thinning more | thinning discards information, does not raise ESS | run more generations, not higher samplefreq |
+| Run stopped early with low ESS | `stoprule=yes` halted on ASDSF (topology only) | `stoprule=no`, or extend with `mcmc append=yes ngen=<new total>` until every ESS > 200 |
+| `sump` says "Use the harmonic mean for Bayes factor comparisons" | legacy MrBayes 3.2.7a banner printed with the HME table | ignore it; compare models with `ss` stepping-stone marginal likelihoods |
 
 ## References
 

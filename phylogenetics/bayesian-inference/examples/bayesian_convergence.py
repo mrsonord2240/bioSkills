@@ -137,7 +137,8 @@ if __name__ == '__main__':
         burnin = float(sys.argv[3]) if len(sys.argv) > 3 else 0.25
         assess_convergence(pfile1, pfile2, burnin)
     else:
-        print('No .p files given; running a self-test on synthetic traces.\n')
+        print('No .p files given; running a self-test on synthetic traces.')
+        print('(run2 TL is shifted by +0.02 on purpose, so TL is expected to FAIL on PSRF.)\n')
         with tempfile.TemporaryDirectory() as tmp:
             p1, p2 = write_synthetic_pfiles(tmp)
             assess_convergence(p1, p2)
