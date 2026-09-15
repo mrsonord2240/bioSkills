@@ -58,7 +58,7 @@ Tell your AI agent what you want to do:
 ## Tips
 - Always acquire a paired global (unenriched) proteome; without it, "regulated site" claims are unfalsifiable.
 - A between-method or between-lab difference is a chemistry hypothesis first (TiO2 vs Fe-IMAC mono/multi bias), biology second.
-- Quantify on multiplicity columns (three underscores), never the collapsed base Intensity.
+- Quantify on per-run multiplicity columns (`Intensity <run>___1/2/3`, three underscores), never the collapsed base Intensity or the aggregated `Intensity___n` sum over runs.
 - For ubiquitinomes, confirm chloroacetamide alkylation and remember K-GG is not ubiquitin-specific.
 - Build motif backgrounds from the matched dataset; whole-proteome backgrounds just rediscover disordered-region composition bias.
 - Kinase-activity inference is prior-limited; simple z-score matches sophisticated methods, so invest in the substrate prior.
