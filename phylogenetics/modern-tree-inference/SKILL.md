@@ -10,7 +10,7 @@ primary_tool: IQ-TREE2
 Reference examples tested with: IQ-TREE 2.2+ / 2.3+, RAxML-NG 1.2+.
 
 Before using code patterns, verify installed versions match. If versions differ:
-- CLI: `iqtree2 --version` then `iqtree2 --help` to confirm flags
+- CLI: `iqtree3 --version` then `iqtree3 --help` to confirm flags (bioconda installs IQ-TREE 3 as `iqtree3`/`iqtree`; on IQ-TREE 2.x the binary is `iqtree2`; commands below checked on 2.4.0)
 - CLI: `raxml-ng --version` then `raxml-ng --help` to confirm flags
 
 If code throws an unrecognized-argument or model-parse error, introspect the installed tool and adapt the example to match the actual API rather than retrying.
@@ -20,7 +20,7 @@ IQ-TREE2 uses single-dash documented forms (`-alrt`, `-bnni`, `-B`); `-B`/`-T` a
 # Modern ML Tree Inference -- ML Support Measures Repeatability, Not Correctness
 
 **"Build a maximum-likelihood tree with support from my alignment"** -> Select a substitution model, search topology and branch lengths that maximize the likelihood, then attach support that quantifies repeatability and concordance that quantifies genealogical agreement.
-- CLI: `iqtree2 -s aln.fasta -m MFP -B 1000 -bnni -alrt 1000` (model selection + dual support, all built in)
+- CLI: `iqtree3 -s aln.fasta -m MFP -B 1000 -bnni -alrt 1000` (model selection + dual support, all built in)
 - CLI: `raxml-ng --all --msa aln.fasta --model GTR+G --bs-metric fbp,tbe` (very large trees, transfer bootstrap, precise branch lengths)
 
 Scope: ML estimation of topology, branch lengths, model selection, branch support, concordance factors, partitioning, topology tests, and LBA control. Model-free distance/NJ trees and distance correction -> distance-calculations. Posterior distributions, MCMC, and CAT-GTR -> bayesian-inference. Per-locus gene trees summarized into a species tree under ILS -> species-trees. Time-scaled trees -> divergence-dating.
@@ -94,15 +94,15 @@ Bootstrap quantifies statistical confidence given the concatenated data; concord
 
 ```bash
 # one gene tree per locus from a directory of locus alignments (-S = separate, no concatenation)
-iqtree2 -S loci_dir -m MFP -B 1000 -T AUTO --prefix loci   # -B 1000 = UFBoot per gene tree, needed to contract weak branches before ASTRAL
+iqtree3 -S loci_dir -m MFP -B 1000 -T AUTO --prefix loci   # -B 1000 = UFBoot per gene tree, needed to contract weak branches before ASTRAL
 
-# gene + likelihood site concordance against a fixed concatenated tree (-te fixes the tree)
-iqtree2 -te concat.treefile -s concat.fasta --gcf loci.treefile --scfl 100 -T 4 --prefix concord
-#  --gcf loci.treefile   per-locus gene trees for gCF
-#  --scfl 100            100 sampled quartets per branch for likelihood sCF (higher = more stable)
+# gene + likelihood site concordance against the fixed concatenated tree: TWO calls,
+# IQ-TREE rejects --gcf together with --scfl ("Do not specify --scf or --gcf with --scfl")
+iqtree3 -t concat.treefile --gcf loci.treefile --prefix concord_g                 # per-locus gene trees for gCF
+iqtree3 -te concat.treefile -s concat.fasta --scfl 100 -T 4 --prefix concord_s    # 100 quartets per branch for likelihood sCF
 ```
 
-Outputs `concord.cf.tree` (Newick with gCF/sCF labels) and `concord.cf.stat` (per-branch gCF, gDF1, gDF2, gDFP, sCF). A node with UFBoot 100 but gCF ~35 (gDF1 ~33, gDF2 ~30) is genes split three ways: the concatenated point estimate barely edges the alternatives and the node is biologically unresolved -- the signature of ILS or introgression, not a clade. Report CFs alongside support on every phylogenomic tree.
+Outputs `concord_g.cf.tree` / `concord_g.cf.stat` (gCF labels; per-branch gCF, gDF1, gDF2, gDFP) and `concord_s.cf.tree` / `concord_s.cf.stat` (likelihood sCF). A node with UFBoot 100 but gCF ~35 (gDF1 ~33, gDF2 ~30) is genes split three ways: the concatenated point estimate barely edges the alternatives and the node is biologically unresolved -- the signature of ILS or introgression, not a clade. Report CFs alongside support on every phylogenomic tree.
 
 ## Topology Tests
 
@@ -110,7 +110,7 @@ For testing an a-priori hypothesis ("can I reject that X and Y are monophyletic?
 
 ```bash
 # trees.nex holds the unconstrained ML tree + the constrained/alternative trees
-iqtree2 -s aln.fasta -m <model> -z trees.nex -n 0 -zb 10000 -au --prefix autest
+iqtree3 -s aln.fasta -m <model> -z trees.nex -n 0 -zb 10000 -au --prefix autest
 #  -z trees.nex   trees to compare        -n 0   no fresh search, just evaluate
 #  -zb 10000      RELL replicates (>=1000) -au    add the AU test (must accompany -zb)
 ```
@@ -179,6 +179,8 @@ When splitting an alignment into partitions, the branch-length linkage choice is
 | Reading UFBoot 80 as "supported" | applied the bootstrap-70 rule to a different scale | use UFBoot >=95 AND SH-aLRT >=80 |
 | Fully-supported deep node distrusted by reviewer | no concordance factors reported | compute gCF/sCFL; treat high-support/low-CF as unresolved |
 | `--scfl` unrecognized | IQ-TREE older than 2.2.2 | upgrade, or fall back to parsimony `--scf` |
+| "Do not specify --scf or --gcf with --scfl" | gCF and likelihood sCF in one call | run `-t ... --gcf` and `-te ... -s ... --scfl` as two calls |
+| `iqtree2: command not found` after `conda install -c bioconda iqtree` | bioconda now ships IQ-TREE 3 | call `iqtree3` (or `iqtree`) |
 | Concatenated tree confidently wrong on a rapid radiation | ILS; concatenation is inconsistent in the anomaly zone | infer per-locus gene trees and a coalescent species tree -> species-trees |
 | AU test "fails to reject" the alternative | weak data, or candidate set padded | do not pad the set; failure to reject is not acceptance |
 
