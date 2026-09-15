@@ -31,7 +31,7 @@ Scope: reading, writing, converting, and inspecting tree files, and selecting a 
 A tree file is a lossy serialization of a richer in-memory object. The biologist cares about the topology plus its annotations -- branch supports, posterior probabilities, 95% HPD intervals on node heights, per-branch rates, divergence dates, taxon metadata -- and formats differ enormously in which of these they can hold, while parsers differ in which they actually read back. Three load-bearing facts:
 
 1. **Conversion is a silent data-destroying operation.** Reading a BEAST MCC tree and writing plain Newick produces a topologically identical tree that plots fine, but the HPD intervals, clade posteriors, and per-branch rates are gone and unrecoverable without re-running a multi-day MCMC. The loss is invisible until a reviewer asks where the credible intervals went.
-2. **The tool, not the format string, decides whether `[&...]` metadata survives.** In Python the naive default (Bio.Phylo) drops BEAST key-values; in R the naive default (`ape::read.nexus`) drops them; the tools built to preserve them are DendroPy (`extract_comment_metadata=True`) and treeio (`read.beast`). Route annotated trees through those.
+2. **The tool, not the format string, decides whether `[&...]` metadata survives.** In Python the naive default (Bio.Phylo) does not parse BEAST key-values and corrupts them on Newick write; in R the naive default (`ape::read.nexus`) drops them; the tools built to preserve them are DendroPy (`extract_comment_metadata=True`) and treeio (`read.beast`). Route annotated trees through those.
 3. **In plain Newick a bare number has no fixed meaning.** In `(A,B)95:0.3` the `95` could be a bootstrap, a posterior, an internal clade name, or a second branch length. Only the tool that wrote the file knows; a parser that guesses wrong turns supports into names silently. IQ-TREE overloads the slot further, writing `SH-aLRT/UFBoot` (e.g. `87.5/98`), which a single-value parser truncates or chokes on.
 
 ## Tool Taxonomy
@@ -75,13 +75,17 @@ tree = Phylo.read('tree.nwk', 'newick')          # exactly one tree; raises if 0
 posterior = list(Phylo.parse('run.trees', 'nexus'))   # many trees: posterior/bootstrap set
 Phylo.write(tree, 'tree.xml', 'phyloxml')        # phyloXML is Bio.Phylo's richest format
 
-Phylo.convert('tree.nex', 'nexus', 'tree.nwk', 'newick')   # WARNING: Newick cannot hold [&...]; annotations dropped
+Phylo.convert('tree.nex', 'nexus', 'tree.nwk', 'newick')   # WARNING: [&...] is written as an escaped [\[&...\]] comment that DendroPy/treeio cannot parse -- annotations are effectively corrupted
 
 for clade in tree.get_nonterminals():
     print(clade.confidence, clade.name)          # confirm the support landed in .confidence, not .name
+    if clade.confidence is None and clade.name and '/' in clade.name:   # IQ-TREE -B + --alrt: '98.5/100' stays in .name
+        sh_alrt, ufboot = (float(v) for v in clade.name.split('/')[-2:])   # last field = UFBoot
 ```
 
-Supported format strings: `newick`, `nexus`, `phyloxml`, `nexml`, `cdao`. Colors and branch widths persist only in phyloXML.
+Supported format strings: `newick`, `nexus`, `phyloxml`, `nexml`, `cdao` (`cdao` raises `KeyError` unless `pip install rdflib`, and does not keep confidences). Colors and branch widths persist only in phyloXML.
+
+Encoding: on Windows, path-based `Phylo.read`/`Phylo.write` (and DendroPy `path=`) use the locale codec (cp1252), garbling non-ASCII tip names. Pass explicit handles for both directions: `with open(p, encoding='utf-8') as fh: Phylo.read(fh, 'newick')`, and the same with `'w'` for writing.
 
 ## Preserve BEAST/MrBayes Annotations Before Down-Converting
 
@@ -95,10 +99,10 @@ import dendropy
 tree = dendropy.Tree.get(path='mcc.tree', schema='nexus', extract_comment_metadata=True)
 for node in tree:
     if node.annotations.get_value('posterior') is not None:
-        post = node.annotations.get_value('posterior')
-        hpd = node.annotations.get_value('height_95%_HPD')   # raw BEAST key; treeio typically exposes it as height_0.95_HPD (exact name varies by source program and version -- introspect the columns)
+        post = float(node.annotations.get_value('posterior'))   # DendroPy returns strings; cast
+        hpd = [float(v) for v in node.annotations.get_value('height_95%_HPD')]   # raw BEAST key; treeio typically exposes it as height_0.95_HPD (exact name varies by source program and version -- introspect the columns)
         # persist post/hpd to a side table keyed by the clade before any conversion
-tree.write(path='topology.nwk', schema='newick', suppress_annotations=True)   # intentional, after extraction
+tree.write(path='topology.nwk', schema='newick', suppress_annotations=True, suppress_rooting=True)   # intentional, after extraction; suppress_rooting drops the leading [&R]
 ```
 
 In R the equivalent is treeio `read.beast('mcc.tree')` then `get.data()` / `as_tibble()`, feeding ggtree (tree-visualization); `write.beast()` re-serializes with annotations intact.
@@ -107,21 +111,21 @@ In R the equivalent is treeio `read.beast('mcc.tree')` then `get.data()` / `as_t
 
 ### BEAST/MrBayes MCC to Plain Newick Erases the Credible Intervals
 **Trigger:** `Phylo.convert`, `ape::read.nexus` + `write.tree`, or any "just give me the topology" step on an annotated tree.
-**Mechanism:** The HPDs, posteriors, and rates live only in the `[&...]` comments, which plain Newick cannot hold and stripping parsers discard.
+**Mechanism:** The HPDs, posteriors, and rates live only in the `[&...]` comments; stripping parsers (`ape::read.nexus`) discard them, and Bio.Phylo writes them as escaped `[\[&...\]]` comments that DendroPy and treeio no longer parse.
 **Symptom:** The output plots fine but the credible intervals are gone, irrecoverable without re-running the MCMC.
 **Fix:** Read with treeio `read.beast` or DendroPy `extract_comment_metadata=True`; extract the numbers to a side table; keep the original `.tree` as the source of truth.
 
 ### Support Value Read as a Node Name (or Truncated)
 **Trigger:** Parsing a tree whose internal-node slot holds a bootstrap, a posterior, a clade name, or IQ-TREE's `SH-aLRT/UFBoot` dual value.
-**Mechanism:** The Newick grammar gives one slot for all of these; the parser must be told which it is, and a single-value reader truncates the `/`-delimited dual support.
-**Symptom:** Supports appear as `.name` strings, or only one of two IQ-TREE values survives, or the parse errors on `/`.
-**Fix:** Know what wrote the file; in Bio.Phylo inspect `.confidence` vs `.name`; in treeio use `read.iqtree`/`read.raxml`, which split dual support correctly.
+**Mechanism:** The Newick grammar gives one slot for all of these; the parser must be told which it is. Bio.Phylo keeps a non-numeric label such as `98.5/100` whole in `.name` and leaves `.confidence` None.
+**Symptom:** Supports appear as `.name` strings, and any code reading `.confidence` silently gets None.
+**Fix:** Know what wrote the file; in Bio.Phylo inspect `.confidence` vs `.name` and split `name.split('/')` (SH-aLRT, UFBoot last) as in the snippet above; in treeio use `read.iqtree`/`read.raxml`, which split dual support correctly.
 
 ### Whitespace, Underscore, or Non-ASCII Taxon Names
 **Trigger:** Tip names with spaces, parentheses, commas, or accented characters; reliance on the Newick underscore-space convention.
 **Mechanism:** Naive CLI tools split unquoted spaces, and underscore-to-space auto-conversion silently desyncs tip labels from a metadata join key.
 **Symptom:** Downstream tools error or a metadata merge matches nothing.
-**Fix:** Sanitize to `[A-Za-z0-9_.]`, single-quote when spaces are unavoidable, and round-trip-test the labels against the metadata table before any join.
+**Fix:** Read and write through UTF-8 handles; sanitize to `[A-Za-z0-9_.]` before ape or ete3 ever see the file (ape reads `'O''Brien isolate 7'` as `NA`; ete3 raises on quoted names), keep a label map, and round-trip-test the labels against the metadata table before any join.
 
 ### Nexus TRANSLATE-Table Desync and Rooted/Unrooted Confusion
 **Trigger:** Hand-editing or merging Nexus tree blocks; assuming topology shape implies rootedness.
@@ -147,6 +151,9 @@ In R the equivalent is treeio `read.beast('mcc.tree')` then `get.data()` / `as_t
 | Bootstrap values show up as taxon names | node-label slot read as `.name` | set/inspect confidence parsing; use a software-specific reader |
 | Metadata join matches nothing | underscore/space relabeling of tips | sanitize and round-trip-test labels before joining |
 | Parser errors on `[` | strict parser chokes on FigTree comment | strip comments only after extracting needed metadata |
+| `AssertionError: Two string taxonomies?` from `Phylo.read` on a MrBayes `.con.tre` | Bio.Phylo cannot parse MrBayes' annotated consensus layout | read with DendroPy (`extract_comment_metadata=True`) or treeio `read.mrbayes` |
+| NeXML tips named `d7`, `d8`... | Bio.Phylo's NeXML reader names tips by otu id, not label | check tip names; read NeXML from other tools with DendroPy |
+| Non-ASCII tip garbled (`CercopithÃ¨que`) | path-based read/write used the Windows locale codec | open files with `encoding='utf-8'` for read and write |
 
 ## References
 
