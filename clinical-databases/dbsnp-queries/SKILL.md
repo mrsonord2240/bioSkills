@@ -139,7 +139,8 @@ def summarize_refsnp(payload):
         'gene': primary.get('allele_annotations', [{}])[0].get('assembly_annotation', [{}])[0].get('genes', [{}])[0].get('locus'),
         'placements_grch38': alleles,
         'is_multiallelic': len(alleles) > 2,
-        'merge_history': payload.get('merged_snapshot_data', [])
+        # rsIDs merged INTO this current record (rs429358 absorbed rs630496, rs61228756)
+        'merged_from': [m.get('merged_rsid') for m in payload.get('dbsnp1_merges', [])]
     }
 ```
 
@@ -147,30 +148,30 @@ def summarize_refsnp(payload):
 
 **Goal:** Resolve a possibly-deprecated rsID to the current canonical rsID, following the full merge chain.
 
-**Approach:** Recursively follow `merged_snapshot_data` until the response has no further merge entries, with cycle detection.
+**Approach:** A merged record has no `primary_snapshot_data`; its `merged_snapshot_data` is an object whose `merged_into` list names the target (`{"proxy_build_id": "85", "merged_into": ["429358"]}` for rs630496, checked 2026-09-15). Follow it until a current record is reached, with cycle detection.
 
 ```python
 def resolve_merge_chain(rsid, max_hops=10):
-    '''Follow multi-hop merge chain. Cycle-safe with max_hops cap.'''
-    seen = set()
+    '''Follow multi-hop merge chain. Cycle-safe with max_hops cap. rs630496 -> rs429358.'''
+    chain = []
     current = str(rsid).lstrip('rs')
     for _ in range(max_hops):
-        if current in seen:
-            return {'error': 'merge cycle detected', 'chain': list(seen)}
-        seen.add(current)
+        if current in chain:
+            return {'error': 'merge cycle detected', 'chain': chain}
+        chain.append(current)
         payload = refsnp(current)
         if payload is None:
-            return {'error': 'not found', 'final_rsid': current, 'chain': list(seen)}
+            return {'error': 'not found', 'final_rsid': current, 'chain': chain}
         if payload.get('is_withdrawn'):
-            return {'status': 'withdrawn', 'final_rsid': current, 'chain': list(seen)}
+            return {'status': 'withdrawn', 'final_rsid': current, 'chain': chain}
         primary = payload.get('primary_snapshot_data')
         if primary is not None:
-            return {'status': 'resolved', 'final_rsid': payload.get('refsnp_id'), 'chain': list(seen)}
-        merged = payload.get('merged_snapshot_data', [])
-        if not merged:
-            return {'status': 'orphan', 'final_rsid': current, 'chain': list(seen)}
-        current = str(merged[0].get('merged_into', ''))
-    return {'error': 'hop limit', 'chain': list(seen)}
+            return {'status': 'resolved', 'final_rsid': payload.get('refsnp_id'), 'chain': chain}
+        merged_into = (payload.get('merged_snapshot_data') or {}).get('merged_into') or []
+        if not merged_into:
+            return {'status': 'orphan', 'final_rsid': current, 'chain': chain}
+        current = str(merged_into[0])
+    return {'error': 'hop limit', 'chain': chain}
 ```
 
 ## SPDI <-> HGVS <-> VCF Conversion
@@ -196,15 +197,32 @@ def spdi_to_rsid(spdi_str):
     rsids = r.json().get('data', {}).get('rsids', [])
     return rsids[0] if rsids else None
 
-def vcf_to_canonical_spdi(chrom, pos, ref, alt, assembly='GRCh38'):
-    '''VCF (1-based) -> SPDI (0-based, right-aligned).'''
-    refseq_map = {('1', 'GRCh38'): 'NC_000001.11', ('17', 'GRCh38'): 'NC_000017.11'}
-    refseq = refseq_map.get((str(chrom).lstrip('chr'), assembly))
+REFSEQ_GRCH38 = {
+    '1': 'NC_000001.11', '2': 'NC_000002.12', '3': 'NC_000003.12', '4': 'NC_000004.12',
+    '5': 'NC_000005.10', '6': 'NC_000006.12', '7': 'NC_000007.14', '8': 'NC_000008.11',
+    '9': 'NC_000009.12', '10': 'NC_000010.11', '11': 'NC_000011.10', '12': 'NC_000012.12',
+    '13': 'NC_000013.11', '14': 'NC_000014.9', '15': 'NC_000015.10', '16': 'NC_000016.10',
+    '17': 'NC_000017.11', '18': 'NC_000018.10', '19': 'NC_000019.10', '20': 'NC_000020.11',
+    '21': 'NC_000021.9', '22': 'NC_000022.11', 'X': 'NC_000023.11', 'Y': 'NC_000024.10'
+}
+
+def vcf_to_canonical_spdi(chrom, pos, ref, alt):
+    '''VCF (1-based, GRCh38) -> canonical SPDI string (0-based).
+
+    The endpoint returns the SPDI fields directly under data (seq_id, position, deleted_sequence,
+    inserted_sequence) and adds data.warnings when REF does not match the reference.
+    '''
+    refseq = REFSEQ_GRCH38.get(str(chrom).removeprefix('chr'))
     if refseq is None:
         return None
     raw_spdi = f'{refseq}:{pos - 1}:{ref}:{alt}'
     r = requests.get(f'{VARSVC}/spdi/{raw_spdi}/canonical_representative', timeout=30)
-    return r.json().get('data', {}).get('spdi') if r.ok else None
+    if not r.ok:
+        return None
+    d = r.json().get('data', {})
+    if d.get('warnings'):
+        raise ValueError(f"{chrom}:{pos} {ref}>{alt}: {[w.get('message') for w in d['warnings']]}")
+    return f"{d['seq_id']}:{d['position']}:{d['deleted_sequence']}:{d['inserted_sequence']}"
 ```
 
 ## ALFA Frequencies vs gnomAD
@@ -216,23 +234,38 @@ def vcf_to_canonical_spdi(chrom, pos, ref, alt, assembly='GRCh38'):
 
 ALFA does NOT provide FAF95-style upper-bound CIs; raw AF only. ALFA captures consent-tier metadata enabling consent-respecting lookups for variants gnomAD doesn't carry.
 
+ALFA counts are NOT in the RefSNP JSON (its `frequency` list holds 1000 Genomes, gnomAD, TOPMed and other studies). They come from `GET /variation/v0/refsnp/{id}/frequency`, under BioProject `PRJNA507278`, keyed by ALFA BioSample ID.
+
 ```python
-def alfa_frequency(rsid, ancestry='Total'):
-    '''Pull ALFA per-population AF via Variation Services.'''
-    payload = refsnp(rsid)
-    if payload is None:
+ALFA_BIOPROJECT = 'PRJNA507278'
+ALFA_BIOSAMPLES = {
+    'SAMN10492705': 'Total', 'SAMN10492695': 'European', 'SAMN10492703': 'African',
+    'SAMN10492696': 'African Others', 'SAMN10492698': 'African American', 'SAMN10492704': 'Asian',
+    'SAMN10492697': 'East Asian', 'SAMN10492701': 'Other Asian', 'SAMN10492702': 'South Asian',
+    'SAMN10492699': 'Latin American 1', 'SAMN10492700': 'Latin American 2', 'SAMN11605645': 'Other'
+}
+
+def alfa_frequency(rsid, population='Total'):
+    '''ALFA allele counts and frequencies for one population from /refsnp/{id}/frequency.
+
+    Returns {placement: {'ref', 'total_alleles', 'af': {allele: freq}}}; placement keys look like
+    '1@169549810' for rs6025.
+    '''
+    rs_int = str(rsid).lstrip('rs')
+    r = requests.get(f'{VARSVC}/refsnp/{rs_int}/frequency', timeout=30)
+    if r.status_code == 404:
         return None
-    freq_records = payload.get('primary_snapshot_data', {}).get('allele_annotations', [{}])[0].get('frequency', [])
-    alfa_records = [f for f in freq_records if 'ALFA' in f.get('study_name', '')]
-    for record in alfa_records:
-        if record.get('common_name') == ancestry:
-            return {
-                'allele': record.get('observation', {}).get('inserted_sequence'),
-                'count': record.get('allele_count'),
-                'total': record.get('total_count'),
-                'freq': record.get('allele_count') / record.get('total_count') if record.get('total_count') else None
-            }
-    return None
+    r.raise_for_status()
+    out = {}
+    for placement, record in r.json().get('results', {}).items():
+        counts = record.get('counts', {}).get(ALFA_BIOPROJECT, {}).get('allele_counts', {})
+        for biosample, alleles in counts.items():
+            if ALFA_BIOSAMPLES.get(biosample) != population:
+                continue
+            total = sum(alleles.values())
+            out[placement] = {'ref': record.get('ref'), 'total_alleles': total,
+                              'af': {a: n / total for a, n in alleles.items()} if total else None}
+    return out or None
 ```
 
 ## Per-Operation Failure Modes
@@ -247,7 +280,7 @@ def alfa_frequency(rsid, ancestry='Total'):
 - Trigger: Read one row of `RsMergeArch.bcp.gz` and treat `rsCurrent` as the final answer.
 - Mechanism: Multi-hop merges (rs3 -> rs2 -> rs1 -> rs0) span multiple rows; each row records one hop only.
 - Symptom: Resolved rsID is itself stale; subsequent queries return outdated annotation.
-- Fix: Follow merge chains recursively via Variation Services `merged_snapshot_data` (handles multi-hop in one call).
+- Fix: Follow merge chains via Variation Services: each merged record's `merged_snapshot_data.merged_into`, one hop per request, until a record with `primary_snapshot_data`. Current records list the ids they absorbed in `dbsnp1_merges`.
 
 **3. Confusing withdrawn vs merged**
 - Trigger: Query a withdrawn rsID and find no merge target.

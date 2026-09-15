@@ -1,6 +1,6 @@
-'''dbSNP Build 156 query patterns: rsID resolution, merge-chain following, SPDI conversion.
+'''dbSNP Build 156 query patterns: rsID resolution, merge-chain following, SPDI conversion, ALFA.
 
-Reference: requests 2.31+, myvariant 1.0+ | Verify Variation Services API if Build differs.
+Reference: requests 2.31+, myvariant 1.0+ | checked against live NCBI Variation Services v0 on 2026-09-15.
 Build 156 (Sept 2022) is the current schema; pre-Build-156 E-utilities returns thin legacy summary.
 '''
 import requests
@@ -19,6 +19,14 @@ REFSEQ_GRCH38 = {
     '21': 'NC_000021.9', '22': 'NC_000022.11', 'X': 'NC_000023.11', 'Y': 'NC_000024.10'
 }
 
+ALFA_BIOPROJECT = 'PRJNA507278'
+ALFA_BIOSAMPLES = {
+    'SAMN10492705': 'Total', 'SAMN10492695': 'European', 'SAMN10492703': 'African',
+    'SAMN10492696': 'African Others', 'SAMN10492698': 'African American', 'SAMN10492704': 'Asian',
+    'SAMN10492697': 'East Asian', 'SAMN10492701': 'Other Asian', 'SAMN10492702': 'South Asian',
+    'SAMN10492699': 'Latin American 1', 'SAMN10492700': 'Latin American 2', 'SAMN11605645': 'Other'
+}
+
 
 def refsnp(rsid, sleep=0.34):
     '''Fetch full Build 156 RefSNP JSON. sleep=0.34s -> ~3 req/s without API key.'''
@@ -34,45 +42,44 @@ def refsnp(rsid, sleep=0.34):
 def resolve_merge_chain(rsid, max_hops=10):
     '''Follow multi-hop merge chain. Cycle-safe with max_hops cap.
 
-    Multi-hop merges (rs3 -> rs2 -> rs1 -> rs0) appear as multiple RsMergeArch rows;
-    Variation Services handles this via merged_snapshot_data, but rare edge cases
-    require explicit traversal.
+    A merged record has no primary_snapshot_data; merged_snapshot_data is an object
+    {"merged_into": ["429358"], ...} (rs630496 -> rs429358). Each hop is one request.
     '''
-    seen = set()
+    chain = []
     current = str(rsid).lstrip('rs')
     for _ in range(max_hops):
-        if current in seen:
-            return {'error': 'merge_cycle', 'chain': list(seen)}
-        seen.add(current)
+        if current in chain:
+            return {'error': 'merge_cycle', 'chain': chain}
+        chain.append(current)
         payload = refsnp(current)
         if payload is None:
-            return {'status': 'not_found', 'final_rsid': current, 'chain': list(seen)}
+            return {'status': 'not_found', 'final_rsid': current, 'chain': chain}
         if payload.get('is_withdrawn'):
-            return {'status': 'withdrawn', 'final_rsid': current, 'chain': list(seen),
+            return {'status': 'withdrawn', 'final_rsid': current, 'chain': chain,
                     'reason': payload.get('withdrawn_release', {})}
         if payload.get('primary_snapshot_data') is not None:
-            return {'status': 'resolved', 'final_rsid': payload.get('refsnp_id'),
-                    'chain': list(seen)}
-        merged = payload.get('merged_snapshot_data', [])
-        if not merged:
-            return {'status': 'orphan', 'final_rsid': current, 'chain': list(seen)}
-        current = str(merged[0].get('merged_into', ''))
-    return {'error': 'hop_limit_exceeded', 'chain': list(seen)}
+            return {'status': 'resolved', 'final_rsid': payload.get('refsnp_id'), 'chain': chain,
+                    'merged_from': [m.get('merged_rsid') for m in payload.get('dbsnp1_merges', [])]}
+        merged_into = (payload.get('merged_snapshot_data') or {}).get('merged_into') or []
+        if not merged_into:
+            return {'status': 'orphan', 'final_rsid': current, 'chain': chain}
+        current = str(merged_into[0])
+    return {'error': 'hop_limit_exceeded', 'chain': chain}
 
 
 def alleles_grch38(payload):
-    '''Extract alleles from RefSNP JSON for GRCh38 only. Returns list of {ref, alt, spdi}.
+    '''Extract ALT alleles from RefSNP JSON for GRCh38 only. Returns list of {ref, alt, spdi}.
 
-    A single rsID with len(alleles) > 2 is multi-allelic -- 6-8% of dbSNP rsIDs.
-    Naive rsID -> variant mappings break for these sites.
+    More than one ALT allele = multi-allelic cluster (rs334: T>A, T>C, T>G).
+    Assembly traits sit under placement_annot.seq_id_traits_by_assembly.
     '''
     if payload is None or payload.get('is_withdrawn'):
         return []
     primary = payload.get('primary_snapshot_data', {})
     out = []
     for placement in primary.get('placements_with_allele', []):
-        seq_id_traits = placement.get('seq_id_traits_by_assembly', [{}])[0]
-        if 'GRCh38' not in seq_id_traits.get('assembly_name', ''):
+        traits = (placement.get('placement_annot') or {}).get('seq_id_traits_by_assembly') or [{}]
+        if 'GRCh38' not in (traits[0].get('assembly_name') or ''):
             continue
         for allele in placement.get('alleles', []):
             spdi = allele.get('allele', {}).get('spdi', {})
@@ -88,12 +95,12 @@ def alleles_grch38(payload):
 
 
 def vcf_to_canonical_spdi(chrom, pos, ref, alt):
-    '''VCF (1-based) -> canonical right-aligned SPDI (0-based).
+    '''VCF (1-based, GRCh38) -> canonical SPDI string (0-based).
 
-    The Variant Overprecision Correction Algorithm normalizes left/right-aligned
-    representations to a single canonical form -- required for cross-database joins.
+    The endpoint returns seq_id/position/deleted_sequence/inserted_sequence directly under data,
+    plus data.warnings when REF does not match the reference (raised here).
     '''
-    refseq = REFSEQ_GRCH38.get(str(chrom).lstrip('chr'))
+    refseq = REFSEQ_GRCH38.get(str(chrom).removeprefix('chr'))
     if refseq is None:
         return None
     raw_spdi = f'{refseq}:{pos - 1}:{ref}:{alt}'
@@ -101,7 +108,10 @@ def vcf_to_canonical_spdi(chrom, pos, ref, alt):
     time.sleep(0.34)
     if not r.ok:
         return None
-    return r.json().get('data', {}).get('spdi')
+    d = r.json().get('data', {})
+    if d.get('warnings'):
+        raise ValueError(f"{chrom}:{pos} {ref}>{alt}: {[w.get('message') for w in d['warnings']]}")
+    return f"{d['seq_id']}:{d['position']}:{d['deleted_sequence']}:{d['inserted_sequence']}"
 
 
 def spdi_to_rsid(spdi_str):
@@ -124,68 +134,86 @@ def hgvs_to_canonical_spdi(hgvs):
     return contextuals[0] if contextuals else None
 
 
+def _clinvar_significance(entry):
+    '''ClinVar significance from a myvariant record: clinvar.rcv (list or single dict).'''
+    rcv = (entry.get('clinvar') or {}).get('rcv')
+    rcvs = rcv if isinstance(rcv, list) else ([rcv] if rcv else [])
+    sigs = sorted({x.get('clinical_significance') for x in rcvs if x.get('clinical_significance')})
+    return ';'.join(sigs) or None
+
+
 def batch_normalize_rsids(rsids):
-    '''Normalize a list of rsIDs: resolve merges, flag multi-allelic, return DataFrame.'''
+    '''Normalize a list of rsIDs: resolve merges, flag multi-allelic, one row per input rsID.
+
+    myvariant returns one hit per allele for a multi-allelic rsID (gnomAD values there are gnomAD 2.1.1);
+    hits are collapsed per rsID with per-allele values joined by ';'.
+    '''
     mv = myvariant.MyVariantInfo()
-    fields = ['dbsnp', 'gnomad_exome.af.af', 'gnomad_genome.af.af', 'clinvar.clinical_significance']
-    aggregated = mv.getvariants(rsids, fields=fields)
+    fields = ['dbsnp.rsid', 'gnomad_exome.af.af', 'gnomad_genome.af.af', 'clinvar.rcv.clinical_significance']
+    hits_by_rsid = {}
+    for entry in mv.getvariants(rsids, fields=fields):
+        hits_by_rsid.setdefault(entry.get('query'), []).append(entry)
     rows = []
-    for entry in aggregated:
-        rsid = entry.get('query')
+    for rsid in dict.fromkeys(rsids):
+        hits = [h for h in hits_by_rsid.get(rsid, []) if not h.get('notfound')]
         merge_result = resolve_merge_chain(rsid)
         alleles = alleles_grch38(refsnp(merge_result.get('final_rsid', rsid)))
+        # one ';'-separated value per myvariant hit, '.' where the hit has no value (keeps alleles aligned)
+        join = lambda vals: ';'.join('.' if v is None else str(v) for v in vals) or None
         rows.append({
             'input_rsid': rsid,
             'canonical_rsid': merge_result.get('final_rsid'),
             'status': merge_result.get('status'),
             'chain_length': len(merge_result.get('chain', [])),
-            'is_multiallelic': len(alleles) > 1 and len({a['ref'] for a in alleles}) > 1,
-            'n_alleles': len(alleles),
-            'gnomad_exome_af': entry.get('gnomad_exome', {}).get('af', {}).get('af'),
-            'gnomad_genome_af': entry.get('gnomad_genome', {}).get('af', {}).get('af'),
-            'clinvar_sig': entry.get('clinvar', {}).get('clinical_significance')
+            'is_multiallelic': len(alleles) > 1,
+            'grch38_alleles': ','.join(f"{a['ref']}>{a['alt']}" for a in alleles),
+            'myvariant_ids': join(h.get('_id') for h in hits),
+            'gnomad_v2_exome_af': join((h.get('gnomad_exome') or {}).get('af', {}).get('af') for h in hits),
+            'gnomad_v2_genome_af': join((h.get('gnomad_genome') or {}).get('af', {}).get('af') for h in hits),
+            'clinvar_sig': join(_clinvar_significance(h) for h in hits)
         })
     return pd.DataFrame(rows)
 
 
 def alfa_population_frequencies(rsid):
-    '''Extract ALFA per-population AFs from RefSNP JSON.
+    '''ALFA per-population allele counts from /refsnp/{id}/frequency (not in the RefSNP JSON).
 
     ALFA aggregates dbGaP studies across 12 ancestry groups. Use when:
     - Variant is array-genotyped (gnomAD may miss it)
     - Consent-respecting frequency lookup needed
     Do NOT use for rare-variant FAF95 -- use gnomAD instead.
     '''
-    payload = refsnp(rsid)
-    if payload is None:
+    rs_int = str(rsid).lstrip('rs')
+    r = requests.get(f'{VARSVC}/refsnp/{rs_int}/frequency', timeout=30)
+    time.sleep(0.34)
+    if r.status_code == 404:
         return None
-    freq_records = (payload.get('primary_snapshot_data', {})
-                    .get('allele_annotations', [{}])[0]
-                    .get('frequency', []))
-    alfa = [f for f in freq_records if 'ALFA' in f.get('study_name', '')]
+    r.raise_for_status()
     out = {}
-    for record in alfa:
-        ancestry = record.get('common_name', 'Unknown')
-        total = record.get('total_count')
-        count = record.get('allele_count')
-        out[ancestry] = {
-            'allele': record.get('observation', {}).get('inserted_sequence'),
-            'count': count,
-            'total': total,
-            'af': count / total if total else None
-        }
+    for placement, record in r.json().get('results', {}).items():
+        counts = record.get('counts', {}).get(ALFA_BIOPROJECT, {}).get('allele_counts', {})
+        for biosample, alleles in counts.items():
+            total = sum(alleles.values())
+            out[ALFA_BIOSAMPLES.get(biosample, biosample)] = {
+                'placement': placement,
+                'ref': record.get('ref'),
+                'counts': alleles,
+                'total': total,
+                'af': {a: n / total for a, n in alleles.items()} if total else None
+            }
     return out
 
 
 if __name__ == '__main__':
-    apoe_e4 = 'rs429358'
-    chain = resolve_merge_chain(apoe_e4)
-    print(f'rs429358 (APOE e4): status={chain["status"]}, chain_length={len(chain.get("chain", []))}')
+    chain = resolve_merge_chain('rs630496')
+    print(f'rs630496 (merged): status={chain["status"]}, final=rs{chain["final_rsid"]}, chain={chain["chain"]}')
     payload = refsnp(chain['final_rsid'])
     alleles = alleles_grch38(payload)
-    print(f'GRCh38 alleles: {alleles}')
+    print(f'GRCh38 alleles: {alleles}; merged_from: {chain.get("merged_from")}')
 
-    spdi = vcf_to_canonical_spdi('17', 43094464, 'G', 'A')
-    print(f'BRCA1 chr17:43094464:G>A canonical SPDI: {spdi}')
-    rsid = spdi_to_rsid(spdi)
-    print(f'  -> rsID: {rsid}')
+    spdi = vcf_to_canonical_spdi('17', 43106487, 'A', 'C')  # BRCA1 c.181T>G
+    print(f'BRCA1 chr17:43106487:A>C canonical SPDI: {spdi}')
+    print(f'  -> rsID: {spdi_to_rsid(spdi)}')
+
+    alfa = alfa_population_frequencies('rs6025')
+    print(f'rs6025 ALFA Total: {alfa.get("Total")}')
