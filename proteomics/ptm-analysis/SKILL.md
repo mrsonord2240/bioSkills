@@ -90,7 +90,7 @@ Benchmark result (Mueller-Dott 2025): across ~19 methods, simple z-score (KSEA/R
 | Scenario | Recommended | Why |
 |---|---|---|
 | Phospho-only run, want regulated sites | Acquire a PAIRED global proteome -> MSstatsPTM `groupComparisonPTM` -> require significance in `ADJUSTED.Model` | Unadjusted site changes are confounded with protein abundance |
-| No global proteome available | Report site changes as UNADJUSTED (`PTM.Model`; `ADJUSTED.Model` is absent) and flag the confound explicitly; optionally `use_unmod_peptides = TRUE` uses unmodified peptides co-enriched in the PTM runs as a weak protein proxy -- label those results proxy-adjusted | Cannot separate occupancy from abundance; do not claim "regulation" |
+| No global proteome available | Report site changes as UNADJUSTED (`PTM.Model`; `ADJUSTED.Model` is absent) and flag the confound explicitly; optionally `use_unmod <- TRUE` (passed as `use_unmod_peptides`) uses unmodified peptides co-enriched in the PTM runs as a weak protein proxy, which needs those unmodified rows kept in the evidence -- label those results proxy-adjusted | Cannot separate occupancy from abundance; do not claim "regulation" |
 | Between-method phospho difference | Suspect chemistry (TiO2 vs Fe-IMAC mono/multi bias) BEFORE biology | Enrichment is a confounded filter |
 | Multiply-phospho peptides present | Localize per-site (Ascore/ptmRS) AND report empirical global FLR | Peptide FDR != site FDR |
 | "Ubiquitination" sites | Confirm chloroacetamide alkylation; treat K-GG as ub + NEDD8 + ISG15; consider UbiSite | Iodoacetamide artifact + NEDD8/ISG15 confound |
@@ -145,14 +145,20 @@ long['log2_intensity'] = np.log2(long['intensity'])
 library(MSstatsPTM)
 rd <- function(f) read.table(f, sep = '\t', header = TRUE, quote = '')
 
+use_unmod <- FALSE   # TRUE only when no global run exists (weak proxy, see Decision Tree)
+
 # The converter uses the best-localized sequence as is and keeps unmodified peptides from the
 # enriched runs, so apply the class-I rule to the enriched evidence FIRST: keep rows carrying the
 # modification whose best site probability (from 'Phospho (STY) Probabilities') is >= 0.75.
+# The use_unmod proxy needs the unmodified rows, so keep those too when it is on.
 ev <- rd('evidence_phospho.txt')
 site_prob <- vapply(regmatches(ev$Phospho..STY..Probabilities,
                                gregexpr('(?<=\\()[0-9.]+(?=\\))', ev$Phospho..STY..Probabilities, perl = TRUE)),
                     function(p) if (length(p)) max(as.numeric(p)) else NA_real_, numeric(1))
-ev <- ev[grepl('Phospho \\(STY\\)', ev$Modified.sequence) & !is.na(site_prob) & site_prob >= 0.75, ]
+is_mod <- grepl('Phospho \\(STY\\)', ev$Modified.sequence)
+keep <- is_mod & !is.na(site_prob) & site_prob >= 0.75
+if (use_unmod) keep <- keep | !is_mod
+ev <- ev[keep, ]
 
 # Converters are <Tool>toMSstatsPTMFormat and return a list with $PTM and $PROTEIN.
 # MaxQtoMSstatsPTMFormat reads the MaxQuant 'evidence.txt' (NOT the Phospho (STY)Sites
@@ -169,7 +175,7 @@ input <- MaxQtoMSstatsPTMFormat(
   mod_id = '\\(Phospho \\(STY\\)\\)',
   which_proteinid_ptm = 'Proteins',
   which_proteinid_protein = 'Proteins',
-  use_unmod_peptides = FALSE   # TRUE only when no global run exists (weak proxy, see Decision Tree)
+  use_unmod_peptides = use_unmod
 )
 stopifnot('PROTEIN' %in% names(input))   # no protein dataset -> nothing to adjust against
 
@@ -261,14 +267,17 @@ KSData <- read.csv('PSP&NetworKIN_Kinase_Substrate_Dataset.csv')   # user-suppli
 pg <- rd('proteinGroups_global.txt')
 gene_symbol <- setNames(sub(';.*', '', pg$Gene.names), sub(';.*', '', pg$Protein.IDs))
 
+# log2FC = +/-Inf (site measured in one condition only) gives FC = 0 or Inf, and one such row
+# turns every kinase z-score NaN; filter on log2FC, not on the linear FC (0 is finite)
+ks <- adjusted[is.finite(adjusted$log2FC), ]
 PX <- data.frame(
-  Protein = sub('_[STY][0-9]+$', '', adjusted$Protein),
-  Gene = gene_symbol[sub('_[STY][0-9]+$', '', adjusted$Protein)],   # HUGO symbol; merge key with SUB_GENE
+  Protein = sub('_[STY][0-9]+$', '', ks$Protein),
+  Gene = gene_symbol[sub('_[STY][0-9]+$', '', ks$Protein)],   # HUGO symbol; merge key with SUB_GENE
   Peptide = 'NULL',
-  Residue.Both = sub('^.*_', '', adjusted$Protein),                  # e.g. S473; merge key with SUB_MOD_RSD
-  p = adjusted$adj.pvalue,
-  FC = 2^adjusted$log2FC)   # Treatment/Control because the contrast above is 'Treatment vs Control'
-PX <- PX[!is.na(PX$Gene) & is.finite(PX$FC), ]
+  Residue.Both = sub('^.*_', '', ks$Protein),                  # e.g. S473; merge key with SUB_MOD_RSD
+  p = ks$adj.pvalue,
+  FC = 2^ks$log2FC)   # Treatment/Control because the contrast above is 'Treatment vs Control'
+PX <- PX[!is.na(PX$Gene), ]
 # NetworKIN = FALSE: PhosphoSitePlus-curated pairs only; TRUE adds predictions above NetworKIN.cutoff
 kinase_scores <- KSEA.Scores(KSData, PX, NetworKIN = FALSE, NetworKIN.cutoff = 3)
 kinase_scores[order(kinase_scores$z.score), c('Kinase.Gene', 'm', 'z.score', 'FDR')]
@@ -335,6 +344,8 @@ def illustrative_localization_score(matched_site_ions, total_ions, depth_p=0.04)
 | `Assertion on '!(append & !use_log_file)' failed` | `dataSummarizationPTM` defaults `append = TRUE` | `dataSummarizationPTM(input, use_log_file = FALSE, append = FALSE)` |
 | `object 'ptm_model' not found` in `groupComparisonPTM` | `data.type = 'LF'` matches neither branch | `data.type = 'LabelFree'` (or `'TMT'`) |
 | `names(input)` is only `PTM`; `ADJUSTED.Model` missing | `evidence_prot` not passed to `MaxQtoMSstatsPTMFormat` | Pass the global run's evidence as `evidence_prot`; `stopifnot('PROTEIN' %in% names(input))` |
+| `z.score` NaN for every kinase from `KSEA.Scores` | a site with log2FC -Inf/Inf (missing in one condition) entered PX; FC = 0 passes `is.finite(FC)` | drop rows with non-finite `log2FC` before building PX |
+| `Can't assign 4 names to a 0-column data.table` with `use_unmod_peptides = TRUE` | the evidence pre-filter removed every unmodified row | set `use_unmod <- TRUE` so unmodified rows are kept; the class-I rule applies to modified rows only |
 | Site signs inverted in KSEA / up-down calls | Default pairwise Label `Control vs Treatment` means log2FC = Control - Treatment | Check `adjusted$Label` or pass an explicit `contrast.matrix` |
 | Protein names without a site suffix in `ADJUSTED.Model` | Unmodified peptides from the enriched runs entered `$PTM` | Pre-filter evidence to modified rows; drop rows without `_<residue><position>` |
 | KeyError / NaN on `Gene names` | Column is FASTA-dependent, absent without gene annotation | Guard with `.notna()` and fall back to `Protein` |
