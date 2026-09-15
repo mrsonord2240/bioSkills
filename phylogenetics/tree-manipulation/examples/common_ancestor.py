@@ -17,7 +17,7 @@ print('Full tree:')
 Phylo.draw_ascii(tree)
 
 primates = [tree.find_any(name='Human'), tree.find_any(name='Chimp'), tree.find_any(name='Gorilla')]
-print(f'\nAre Human, Chimp, Gorilla monophyletic? {tree.is_monophyletic(primates)}')
+print(f'\nAre Human, Chimp, Gorilla monophyletic? {bool(tree.is_monophyletic(primates))}')
 
 clade = tree.common_ancestor({'name': 'Human'}, {'name': 'Gorilla'})
 print(f'MRCA clade taxa: {[t.name for t in clade.get_terminals()]}')

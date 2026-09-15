@@ -47,7 +47,7 @@ Rooting is a separate statistical inference layered on top of the topology, and 
 | Non-reversible likelihood (RootDigger / IQ-TREE) | non-reversible model carries directional signal | tree + ALIGNMENT; enough data | yes (model-based) | yes (per-branch likelihood confidence) | the alignment is available and a root confidence is needed | little data; weak signal; compute-limited |
 | Relaxed clock (BEAST) -> divergence-dating | explicit clock + tree prior | alignment + calibrations/tip dates; MCMC | yes | yes (posterior over roots) | time-scaled / dated / phylodynamic analyses | a quick structural edit, no dating intended |
 
-Rule: never report a root from a single method without a sanity check. If a close, monophyletic outgroup is available, use it. If not, run MAD and MinVar and prefer agreement; disagreement means the root is poorly determined and all "basal" claims must be hedged. With an alignment and a need for a confidence value, use RootDigger (Bettisworth and Stamatakis 2021) or non-reversible IQ-TREE. MAD = Tria et al. 2017; MinVar = Mai et al. 2017; outgroup-free CLIs and Newick Utilities = Junier and Zdobnov 2010.
+Rule: never report a root from a single method without a sanity check. If a close, monophyletic outgroup is available, use it. If not, run MAD and MinVar; disagreement, or a MAD ambiguity index near 1, means the root is poorly determined and all "basal" claims must be hedged. Agreement is NOT root confidence: under a strong clade-wide rate shift both can agree on the same wrong root. With an alignment and a need for a confidence value, use RootDigger (Bettisworth and Stamatakis 2021) or non-reversible IQ-TREE. MAD = Tria et al. 2017; MinVar = Mai et al. 2017; outgroup-free CLIs and Newick Utilities = Junier and Zdobnov 2010.
 
 ## Tool Taxonomy
 
@@ -57,14 +57,14 @@ Rule: never report a root from a single method without a sanity check. If a clos
 | ape / phangorn / phytools (R) | `root`, `phangorn::midpoint`, `phytools::midpoint.root` | `drop.tip`, `extract.clade` | `di2multi`, `multi2di` | R workflows; `drop.tip` sums suppressed branch lengths correctly |
 | DendroPy (Py) | `reroot_at_edge`, `reroot_at_midpoint` | `retain_taxa_with_labels(suppress_unifurcations=True)` | edge collapse, `resolve_polytomies` | metadata-aware edits, posterior tree sets |
 | ete3 (Py) | `set_outgroup`, `set_outgroup(get_midpoint_outgroup())` | `prune([...], preserve_branch_length=True)`, `detach` | `delete`, `resolve_polytomy` | NHX features; MUST pass preserve_branch_length |
-| Newick Utilities (CLI) | `nw_reroot` | `nw_prune`, `nw_clade` | `nw_ed`, `nw_condense` | streaming/Unix-pipeline edits on many trees |
+| Newick Utilities (CLI) | `nw_reroot` | `nw_prune`, `nw_clade` | `nw_ed` with a support address (`nw_condense` merges same-label clades, not low-support branches) | streaming/Unix-pipeline edits on many trees |
 | MAD / MinVar / RootDigger (CLI) | `mad`, `FastRoot.py`, `rootdigger` | -- | -- | outgroup-free or likelihood rooting when no trustworthy outgroup exists |
 
 ## Root with an Outgroup (Multiple, Monophyletic)
 
 **Goal:** Root the tree using known sister-group taxa, preferring multiple close outgroups and verifying ingroup monophyly first.
 
-**Approach:** Confirm the outgroup taxa form a monophyletic group, root on the branch separating them from the ingroup, then check the ingroup is recovered as monophyletic -- if not, the rooting is suspect.
+**Approach:** Confirm the outgroup taxa form a monophyletic group, root on the branch separating them from the ingroup, then check the ingroup is recovered as monophyletic -- if not, the rooting is suspect. An inferred tree is arbitrarily rooted (IQ-TREE writes `(OutA,OutB,ingroup...)`), so first root on an ingroup tip, or the monophyly test returns False for a valid outgroup; pass `outgroup_branch_length`, or Biopython makes the outgroup MRCA a trifurcating root.
 
 ```python
 from Bio import Phylo
@@ -72,8 +72,10 @@ from Bio import Phylo
 tree = Phylo.read('tree.nwk', 'newick')
 outgroup = [{'name': 'OutA'}, {'name': 'OutB'}]      # multiple close outgroups beat a single long branch
 
-if tree.is_monophyletic([tree.find_any(name='OutA'), tree.find_any(name='OutB')]):
-    tree.root_with_outgroup(*outgroup)               # root_with_outgroup, NOT root_with_midpoint
+tree.root_with_outgroup({'name': 'I1'})              # any INGROUP tip: makes the outgroup a clade of the temporary root
+if tree.is_monophyletic([tree.find_any(**o) for o in outgroup]):
+    stem = tree.common_ancestor(*outgroup).branch_length
+    tree.root_with_outgroup(*outgroup, outgroup_branch_length=stem / 2)   # bifurcating root on the outgroup stem
 else:
     print('outgroup not monophyletic: root placement is unreliable, re-check taxon choice')
 ```
@@ -88,8 +90,12 @@ else:
 tree = Phylo.read('tree.nwk', 'newick')
 tree.root_at_midpoint()                              # assumes a clock; a long branch slides the root onto the fast lineage
 # Outgroup-free and clock-relaxed (deep trees): standalone CLIs run on the Newick file
-# MAD:    mad tree.nwk           -> tree.nwk.rooted   (per-branch root ambiguity index)
+# MAD:    mad tree.nwk           -> tree.nwk.rooted   (report the ambiguity index AI; AI near 1 = ambiguous root)
+#         a Newick written by Bio.Phylo ends in '):0;', which MAD 2.2 rejects as corrupt -> strip it first: re.sub(r'\):[0-9.eE+-]+;$', ');', nwk)
 # MinVar: FastRoot.py -i tree.nwk -m MV -o rooted.nwk
+# Non-reversible likelihood root with confidence (needs the alignment; iqtree2 on IQ-TREE 2.x):
+#   iqtree3 -s aln.fa --model-joint 12.12 -B 1000 --root-test -zb 1000 -au
+#   -> report the rootstrap on the root branch (.rootstrap.nex) and the AU confidence set of root branches (.roottest.csv)
 ```
 
 ## Prune Taxa With Branch-Length Preservation
@@ -118,12 +124,23 @@ Non-monophyletic targets cannot be "extracted as a clade" -- there is no node wh
 **Approach:** Collapse any internal branch whose support is below a stated cutoff. The result is a SOFT (uncertainty) polytomy, never a HARD (simultaneous-radiation) one -- label it as such.
 
 ```python
-tree = Phylo.read('tree.nwk', 'newick')              # support parsed into clade.confidence
+tree = Phylo.read('tree.nwk', 'newick')              # single-number labels parse into clade.confidence
 
-tree.collapse_all(lambda c: c.confidence is not None and c.confidence < 70)   # 70 for std bootstrap; use 95 for UFBoot2
-tree.collapse_all(lambda c: c.branch_length is not None and c.branch_length < 1e-8)   # collapse genuinely-zero branches
+def support(c):                                      # IQ-TREE -B + --alrt writes '98.5/100' -> kept in c.name, confidence None
+    if c.confidence is not None:
+        return c.confidence
+    if c.name and '/' in c.name:
+        return float(c.name.split('/')[-1])          # last field = UFBoot
+    return None
+
+assert any(support(c) is not None for c in tree.get_nonterminals()), 'no readable support: collapse would silently do nothing'
+tree.collapse_all(lambda c: support(c) is not None and support(c) < 70)   # 70 for std bootstrap; use 95 for UFBoot2
+tree.collapse_all(lambda c: c.branch_length is not None and c.branch_length <= 1e-6)   # zero-length: match the writer's floor (IQ-TREE 1e-6)
+tree.ladderize()                                     # display order only; rotation changes no biology
 # ape (R): di2multi filters by LENGTH (tol), not support -> zero out low-support branch lengths first, THEN di2multi(phy)
 ```
+
+Any collapse changes some patristic distances (Bio.Phylo `collapse_all` pushes the removed length onto the children; the ape zero-then-`di2multi` recipe shortens paths). Collapse a copy for display or topology work and keep the resolved tree for distance-based analyses.
 
 Resolving the inverse direction (`multi2di` / `resolve_polytomy`) invents an arbitrary order with zero-length branches; analyzing one random resolution treats an arbitrary choice as fact. If a binary tree is required, integrate over many random resolutions and treat the inserted zero-length branches as "no information", not instantaneous divergence.
 
@@ -182,7 +199,7 @@ Resolving the inverse direction (`multi2di` / `resolve_polytomy`) invents an arb
 | Bootstrap collapse cutoff | <50% (near-uninformative floor) or <70% (reliability boundary); state which | common practice |
 | UFBoot2 collapse cutoff | <95% (a different scale from bootstrap -- not 70) | Hoang 2018 |
 | Bayesian posterior collapse cutoff | <0.95 | common practice |
-| Zero-length collapse tolerance | ~1e-8 (or machine epsilon) | removes genuinely-zero branches without deleting real short ones |
+| Zero-length collapse tolerance | match the program that wrote the tree: IQ-TREE writes zero as 1e-6 (use `<= 1e-6`); ape `di2multi` default 1e-8 | a tolerance below the writer's floor catches no zero-length branch |
 | Outgroup distance | accuracy degrades monotonically with distance | prefer the closest credible outgroup |
 
 ## Common Errors
@@ -196,6 +213,8 @@ Resolving the inverse direction (`multi2di` / `resolve_polytomy`) invents an arb
 | Bootstrap re-read as support for a pruned subtree | support was computed on the full taxon set | re-run inference on the subset for valid support |
 | MAD and MinVar disagree on the root | the root is genuinely poorly determined | treat as uncertain; seek a close outgroup or RootDigger confidence; hedge all ancestral claims |
 | `root_with_midpoint` AttributeError | no such method | the methods are `root_at_midpoint()` and `root_with_outgroup()` |
+| Valid outgroup reported "not monophyletic" on an IQ-TREE tree | `is_monophyletic` tests rooted clades; the file is rooted on the outgroup's own trifurcation | root on an ingroup tip first, then test and root with `outgroup_branch_length` |
+| `collapse_all` on support collapses nothing, no error | IQ-TREE `SH-aLRT/UFBoot` label kept in `clade.name`, `confidence` None | parse `clade.name.split('/')[-1]`; assert support was read before collapsing |
 
 ## References
 
