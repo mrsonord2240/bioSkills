@@ -54,7 +54,7 @@ Tell your AI agent what you want to do:
 1. Read and sanity-check the alignment (flag ambiguous blocks to trim upstream)
 2. Choose a correction from the data: shallow/barcoding -> p-distance or K80; divergent DNA -> TN93 (+ gamma if ASRV); compositional skew -> LogDet; protein -> LG/WAG
 3. Compute the distance matrix in the right tool (ape/FastME for real corrections; Bio.Phylo/scikit-bio only for identity/score distances)
-4. Run a saturation pre-flight (Xia Iss vs Iss.c) for deep data and refuse to over-trust a saturated tree
+4. Run a saturation pre-flight (ape proxy: fraction of pairs with p > 0.5 and the transition-vs-distance plateau; Xia Iss optional in DAMBE) for deep data and refuse to over-trust a saturated tree
 5. Build the tree (FastME for the best distance tree; NJ/BIONJ for speed or ML seeding; UPGMA only if a clock is established)
 6. Bootstrap if support is wanted, and report it as precision, not accuracy
 

@@ -41,7 +41,7 @@ Every nucleotide correction inverts the probability that a site differs under a 
 
 | Correction | Corrects for | When to use | ape model |
 |---|---|---|---|
-| p-distance (raw / Hamming) | nothing | very shallow / barcoding; saturation plots | `'raw'`, `'N'` |
+| p-distance (raw / Hamming) | nothing | very shallow / barcoding; saturation plots | `'raw'` (`'N'`, `'TS'`, `'TV'` return COUNTS -- divide by `ncol(aln)`) |
 | Jukes-Cantor (JC69) | multiple hits, one rate | minimal correction, quick sanity tree | `'JC69'` |
 | Kimura 2-param (K80) | + transition/transversion bias | default DNA quick distance | `'K80'` (default) |
 | Tamura-Nei (TN93) | + two transition rates + unequal base freqs | mtDNA, richest closed-form | `'TN93'` |
@@ -66,7 +66,7 @@ UPGMA is the key warning: it forces every tip equidistant from the root, which m
 
 | Tool (lang) | Distance step | Tree step | Note |
 |---|---|---|---|
-| Bio.Phylo.TreeConstruction (Py) | `DistanceCalculator` identity / BLOSUM / PAM matrices ONLY | `DistanceTreeConstructor().nj()` / `.upgma()` | NO JC/K80/TN93; `'identity'` is p-distance, named matrices are score distances |
+| Bio.Phylo.TreeConstruction (Py) | `DistanceCalculator` identity / BLOSUM / PAM matrices ONLY | `DistanceTreeConstructor().nj()` / `.upgma()` | NO JC/K80/TN93; `'identity'` is p-distance only on ungapped alignments (gap-vs-base counts as a mismatch over the full length -- strip gap columns first); named matrices are score distances |
 | ape (R) | `dist.dna(model=, gamma=)` -- full menu incl. LogDet, gamma | `nj()`, `bionj()`, `fastme.bal()`, `fastme.ols()` | the reference engine for real corrections |
 | phangorn (R) | `dist.ml(model=)` -- DNA JC69/F81 only, but all protein matrices | `upgma()`, `NJ()` | the natural choice for protein distances |
 | FastME (CLI) | JC/K2P/F84/TN93/LogDet/protein | NJ/BIONJ/BME/OLS-ME + NNI/SPR + bootstrap | standalone for very large n; `-m B` = balanced ME |
@@ -88,30 +88,45 @@ aln = AlignIO.read('alignment.fasta', 'fasta')
 calc = DistanceCalculator('identity')        # identity-only: this is a p-distance, NOT a JC/K80 correction
 dm = calc.get_distance(aln)                   # multiple/back/parallel hits are NOT corrected here
 tree = DistanceTreeConstructor().nj(dm)       # NJ algorithm is correct; the DISTANCES are the limitation
-# For a model-corrected distance, build the matrix in ape (below) and pass it to skbio/Bio.Phylo, or stay in R.
+
+# Model-corrected matrix from R -- write.csv(as.matrix(dist.dna(aln, model = 'K80')), 'k80.csv') -- passed in:
+import pandas as pd
+from Bio.Phylo.TreeConstruction import DistanceMatrix
+df = pd.read_csv('k80.csv', index_col=0)
+names = list(df.index)
+lower = [[float(df.iat[i, j]) for j in range(i + 1)] for i in range(len(names))]   # lower triangle incl. diagonal
+tree_k80 = DistanceTreeConstructor().nj(DistanceMatrix(names, lower))
+# scikit-bio: skbio.tree.nj(skbio.DistanceMatrix(df.values, names))
 ```
 
 ```r
 library(ape)
 aln <- read.dna('alignment.fasta', format = 'fasta')
-d <- dist.dna(aln, model = 'TN93', gamma = 0.5)   # model-corrected; gamma applies ASRV (alpha < 1 = strong)
-tree <- fastme.bal(d, nni = TRUE, spr = TRUE)     # balanced minimum evolution: the modern best distance tree
-# nj(d) / bionj(d) are the faster single-pass alternatives; bionj seeds ML searches
+alpha <- 0.5                                        # gamma shape (alpha < 1 = strong ASRV); estimate it, do not assume
+method <- function(x) fastme.bal(dist.dna(x, model = 'TN93', gamma = alpha), nni = TRUE, spr = TRUE)
+tree <- method(aln)                                 # define the method ONCE so the bootstrap reuses it exactly
+# nj() / bionj() are the faster single-pass alternatives; bionj seeds ML searches
 ```
 
 ## Pre-flight: Test Substitution Saturation
 
 **Goal:** Decide whether the data retain phylogenetic signal before trusting any deep distance tree.
 
-**Approach:** Compute Xia's index of substitution saturation Iss and compare it to the simulation-derived critical value Iss.c; a saturation plot of transitions against a corrected distance is the visual companion.
+**Approach:** Run the ape proxy below: the fraction of pairs with p > 0.5 and whether transition proportions still rise with a corrected distance. Xia's formal Iss vs Iss.c test (Xia 2003) is implemented only in DAMBE (not ape/phangorn); run it there as an optional confirmation. Do not wait for `NaN` as the warning -- fully saturated data can return finite JC69/TN93 values.
 
 ```r
-library(ape)                    # the formal entropy-based Iss vs Iss.c test lives in DAMBE; this is the ape/base-R saturation plot
-d_jc  <- dist.dna(aln, model = 'JC69')
-ts_tv <- dist.dna(aln, model = 'TS')   # transitions; plot against d_jc -- a PLATEAU means saturated, signal erased
-plot(d_jc, ts_tv)                       # unsaturated = roughly linear; bent-over transition curve = drop those sites
-# Interpretation gate (Xia 2003): Iss < Iss.c => signal retained (usable); Iss >= Iss.c => substantially saturated, do not use.
+library(ape)
+L  <- ncol(aln)
+p  <- dist.dna(aln, model = 'raw')          # p-distance
+d  <- dist.dna(aln, model = 'TN93')         # corrected distance
+ts <- dist.dna(aln, model = 'TS') / L       # 'TS'/'TV' return COUNTS -> divide by length for proportions
+tv <- dist.dna(aln, model = 'TV') / L
+mean(p > 0.5)                               # fraction of pairs with p > 0.5; any sizeable fraction = red flag
+coef(lm(as.vector(ts) ~ as.vector(d)))[2]   # slope of transitions vs distance; near 0 = PLATEAU = saturated
+plot(d, ts, col = 'red', ylim = range(c(ts, tv))); points(d, tv, col = 'blue')   # unsaturated = both still rising
 ```
+
+On simulated test data: saturated (83% of pairs p > 0.5) gave a transition slope of 0.04 and a mean ts/tv of 0.76; a deep but unsaturated set (no pair p > 0.5) gave 0.17 and 1.03. A flat transition curve with many p > 0.5 pairs means do not build a distance tree.
 
 ## Bootstrap a Distance Tree
 
@@ -121,11 +136,24 @@ plot(d_jc, ts_tv)                       # unsaturated = roughly linear; bent-ove
 
 ```r
 library(ape)
-boot <- boot.phylo(tree, aln, function(x) fastme.bal(dist.dna(x, model = 'TN93')), B = 500)
+set.seed(42)
+boot <- boot.phylo(tree, aln, method, B = 500)   # the SAME method (model + gamma + algorithm) that built the tree
 # 100-1000 replicates standard; support measures SAMPLING stability only -- it cannot detect a bias in the distances
 ```
 
-In Python, Bio.Phylo's `bootstrap_consensus(aln, 100, DistanceTreeConstructor(calc, 'nj'), majority_consensus)` does the same on the identity distance (same correction caveat).
+In Python, do NOT pass unrooted NJ replicates to `bootstrap_consensus(..., majority_consensus)`: `majority_consensus` counts ROOTED clades and each NJ replicate is rooted arbitrarily, so a split's count is shared with its complement (on a 20-taxon barcode set, max support 61-68% where the same replicates rooted give 100%). Root every replicate on a fixed outgroup first (identity distance, same correction caveat), and expect it to be slow for large n (~15 min at n=150, B=100) -- prefer ape `boot.phylo` there:
+
+```python
+import random
+from Bio.Phylo.Consensus import bootstrap_trees, majority_consensus
+
+random.seed(42)
+reps = []
+for rep in bootstrap_trees(aln, 100, DistanceTreeConstructor(calc, 'nj')):
+    rep.root_with_outgroup({'name': 'outgroup_taxon'})   # fixed outgroup for every replicate
+    reps.append(rep)
+consensus = majority_consensus(reps, cutoff=0.5)          # clade.confidence = % of replicates
+```
 
 ## When Distance Is Legitimate vs a Trap
 
@@ -139,7 +167,7 @@ A trap, do not: publication-grade deep phylogeny or formal hypothesis testing (d
 **Trigger:** Deep divergences with many pairwise p-distances above ~0.5; transitions exhausted while transversions still climb.
 **Mechanism:** So many superimposed substitutions accumulate that observed differences approach the random expectation; the correction inflates violently near its singularity and carries no remaining signal about deep splits.
 **Symptom:** Corrected distances explode and become unstable; the saturation plot's transition curve flattens; deep nodes are unstable across models.
-**Fix:** Run the Xia Iss test; exclude transitions, third codon positions, or saturated partitions; do not build a deep distance (or ML) tree on saturated data.
+**Fix:** Run the saturation pre-flight (optionally Xia Iss in DAMBE); exclude transitions, third codon positions, or saturated partitions; do not build a deep distance (or ML) tree on saturated data.
 
 ### UPGMA Returns the Wrong Topology Under Rate Variation
 **Trigger:** Lineages evolving at different rates analyzed with UPGMA.
@@ -164,7 +192,8 @@ A trap, do not: publication-grade deep phylogeny or formal hypothesis testing (d
 | Quantity | Threshold | Source / rationale |
 |---|---|---|
 | p-distance saturation onset | unstable as nucleotide p -> ~0.5-0.6; singularity at 0.75 (equal base freqs) | many pairwise p > ~0.5 = red flag, run a saturation test |
-| Xia substitution-saturation test | Iss < Iss.c => usable; Iss >= Iss.c (esp. asymmetric Iss.c, the stricter bar) => do not use | Xia et al. 2003 (DAMBE) |
+| Xia substitution-saturation test (DAMBE only; optional) | Iss < Iss.c => usable; Iss >= Iss.c (esp. asymmetric Iss.c, the stricter bar) => do not use | Xia et al. 2003 (DAMBE) |
+| Runnable ape proxy | many pairs p > 0.5 AND transition-proportion slope vs TN93 near 0 => saturated | simulated check: 0.83 / 0.04 saturated vs 0.00 / 0.17 unsaturated |
 | JC/correction singularity | log argument -> 0 as p -> 0.75 | d and its variance diverge to infinity |
 | Gamma shape | alpha < ~1 = strong ASRV, materially changes distances/topology | ignoring ASRV inflates long-branch artifacts |
 | ts/tv ratio | commonly 2-15 (~15 primate mtDNA control region) | large ratios make K80/TN93 over JC matter (Tamura & Nei 1993) |
@@ -176,6 +205,7 @@ A trap, do not: publication-grade deep phylogeny or formal hypothesis testing (d
 |---|---|---|
 | NJ tree on `model='identity'` called a Jukes-Cantor tree | DistanceCalculator does NOT do JC/K80/TN93 | compute the corrected matrix in ape/FastME, pass it as a matrix |
 | Corrected distances explode / `NaN` | p near or above 0.75 singularity (saturation) | test saturation; drop saturated sites; do not trust deep distances |
+| `NaN` from K80/TN93 at p ~0.6; `nj()`/`fastme.bal()` stop with "missing values are not allowed" | stationary correction on compositionally skewed pairs (or short alignments): the log argument goes negative below 0.75 | report the NaN pairs; switch to `'logdet'`/`'paralin'`, or build with `njs()`/`bionjs()`, which tolerate missing distances |
 | UPGMA tree disagrees with NJ | UPGMA clock assumption violated by rate variation | use NJ/FastME for molecular data |
 | Unrelated GC-rich taxa group together; topology flips JC vs LogDet | non-stationary composition under a stationary correction | use LogDet/paralinear or a non-stationary ML model |
 | LogDet returns `NaN` / undefined | short sequences drive det(F) <= 0 | use longer alignments or a stationary correction |
