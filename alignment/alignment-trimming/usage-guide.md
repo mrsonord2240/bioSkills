@@ -65,7 +65,7 @@ Tell your AI agent what you want to do:
 1. Identify the downstream goal (tree, HMM, selection analysis, motif scan, structure modelling)
 2. Select the appropriate trimmer and mode (ClipKIT modes vs trimAl modes vs BMGE entropy threshold)
 3. Run with reproducibility-preserving flags (column mapping, log file)
-4. Compute trimming fraction and warn if > 20-30% of columns are removed
+4. For gap- or entropy-based modes, compute the trimming fraction and warn if > 40% of columns are removed; for ClipKIT kpi/kpic modes, compare trees and branch lengths with the untrimmed alignment instead
 5. For selection analysis, prefer per-column reliability scores (TCS, GUIDANCE2) over column removal
 6. Optionally compare alternative trimming modes on the same input
 
@@ -73,8 +73,8 @@ Tell your AI agent what you want to do:
 
 | Concept | Meaning |
 |---------|---------|
-| Column retention | Fraction of original columns kept; > 70% is usually safe, < 50% concerning |
-| Aggressiveness | How readily a mode removes columns; ClipKIT smart-gap is moderate, trimAl strictplus is high |
+| Column retention | Fraction of original columns kept; for gap/entropy-based trimming > 80% is light, < 60% too aggressive. Not meaningful for kpi/kpic modes, which drop singleton columns by design |
+| Aggressiveness | How readily a mode removes columns; ClipKIT smart-gap is light-to-moderate, trimAl strictplus and ClipKIT kpic/kpi are high |
 | Column mapping | Index list of which original columns survived (`-colnumbering`, `--log`) |
 | Per-residue masking | Replace bad residues with `X` instead of removing the column (HMMcleaner) |
 | Column splitting | Divvier alternative: split ambiguous columns rather than remove them |
@@ -82,14 +82,14 @@ Tell your AI agent what you want to do:
 
 ## Tips
 
-- ClipKIT `kpic-smart-gap` is the recommended default for phylogenetic-tree input on concatenated supermatrices; `smart-gap` for single genes
+- ClipKIT `smart-gap` (its default) is the recommended mode for single genes and supermatrices (trim per locus); `kpic-smart-gap` is a topology-focused option for balanced datasets that always needs a before/after outgroup branch-length check and is not for dating, rate or rooting input
 - trimAl `-gappyout` is the right tool for HMM profile preparation; aggressive gap removal benefits HMMER `hmmbuild`
 - For selection analysis (PAML codeml, HyPhy), DO NOT aggressively trim; column removal causes false-positive selection signals (Fletcher & Yang 2010 MBE)
-- BMGE is the prokaryotic phylogenomics standard (default in GToTree); recommended `-h 0.4 -g 0.2`
+- BMGE is widely used in prokaryotic phylogenomics (e.g. GToTree); start at the default entropy threshold (0.5; `-h` in 1.12, `-e` in 2.0) and check retention, since 0.4 can remove most columns
 - Divvier preserves more phylogenetic signal than column removal because ambiguous columns are SPLIT rather than dropped
 - HMMcleaner masks contaminating residues with `X`; pair with a column trimmer for double cleaning
 - Always retain column-mapping (`-colnumbering`, `--log`) for reproducibility
-- The 20%/40% rule reconciles the Tan 2015 vs Steenwyk 2020 controversy: <20% column removal is neutral; >40% removes phylogenetic signal alongside noise. If your trimmer drops more than 40% of columns, the mode is too aggressive for the dataset
+- The 20%/40% rule is an operational heuristic for gap- and entropy-based trimming: <20% column removal is light; if the trimmer drops more than 40% of columns, the setting is too aggressive for the dataset. It does not apply to ClipKIT kpi/kpic modes
 - For phylogenomic incongruence due to suspected alignment artefact (rather than ILS or introgression), apply PhyIN (Maddison 2024 PeerJ) as a second-pass trimmer after ClipKIT/trimAl; it flags neighbouring columns whose split patterns are pairwise tree-incompatible
 - Gblocks default parameters are too aggressive for modern use; relax them or switch to ClipKIT/trimAl
 - Codon-aware trimming (MACSE `trimAlignment` or per-codon-block ClipKIT) is required for any post-MSA cleaning of dN/dS input

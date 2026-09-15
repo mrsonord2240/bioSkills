@@ -1,26 +1,33 @@
-'''Trim alignment with BMGE (entropy + BLOSUM62 context).
+'''Trim alignment with BMGE (entropy + substitution-matrix context).
 
-BMGE (Criscuolo & Gribaldo 2010 BMC Evol Biol) is the standard trimmer in deep
-prokaryotic phylogenomics (GToTree pipeline). Recommended `-h 0.4 -g 0.2` for
-deep phylogenies; `-h 0.6` retains more sites for shallower datasets.
+BMGE (Criscuolo & Gribaldo 2010 BMC Evol Biol) is widely used in prokaryotic phylogenomics
+(e.g. GToTree). BMGE 1.12 and 2.0 use different flags: 1.12 takes the entropy threshold as
+-h and types AA/CODON/DNA; 2.0 takes -e and AA/CO/NT, and prints help for -h (exit 0, no
+output). Lower entropy thresholds trim much harder, so check retention and compare trees.
 '''
-# Reference: BMGE 1.12+ | Verify CLI flags if version differs
+# Reference: BMGE 1.12 and 2.0 | Verify CLI flags if version differs
 
+import os
 import subprocess
 from Bio import AlignIO
 
-def run_bmge(input_fasta, output_fasta, sequence_type='AA', entropy=0.5, gap_threshold=0.2, matrix=None):
-    cmd = [
-        'java', '-Xmx8g', '-jar', 'BMGE.jar',
-        '-i', input_fasta,
-        '-of', output_fasta,
-        '-t', sequence_type,
-        '-h', str(entropy),
-        '-g', str(gap_threshold),
-    ]
+TYPES_V2 = {'AA': 'AA', 'DNA': 'NT', 'CODON': 'CO'}
+
+
+def run_bmge(input_fasta, output_fasta, sequence_type='AA', entropy=0.5, gap_threshold=0.2,
+             matrix=None, jar='BMGE.jar', version='1.12'):
+    '''sequence_type uses 1.12 names (AA, DNA, CODON); they are translated for BMGE 2.0.'''
+    cmd = ['java', '-Xmx8g', '-jar', jar, '-i', input_fasta, '-g', str(gap_threshold)]
+    if version.startswith('2'):
+        cmd += ['-t', TYPES_V2[sequence_type], '-e', str(entropy), '-o', output_fasta]
+    else:
+        cmd += ['-t', sequence_type, '-h', str(entropy), '-of', output_fasta]
     if matrix:
         cmd += ['-m', matrix]
     subprocess.run(cmd, check=True)
+    if not os.path.exists(output_fasta) or os.path.getsize(output_fasta) == 0:
+        raise RuntimeError(f'BMGE wrote no alignment to {output_fasta}; check flags for BMGE {version}')
+
 
 def trimming_summary(input_fasta, output_fasta):
     original = AlignIO.read(input_fasta, 'fasta')
@@ -31,13 +38,14 @@ def trimming_summary(input_fasta, output_fasta):
         'retention': trimmed.get_alignment_length() / original.get_alignment_length(),
     }
 
-if __name__ == '__main__':
-    run_bmge('input.fasta', 'trimmed.fasta', sequence_type='AA', entropy=0.4, gap_threshold=0.2)
-    summary = trimming_summary('input.fasta', 'trimmed.fasta')
-    print('BMGE -h 0.4 -g 0.2 (deep prokaryotic phylogenomics):')
-    print(f'  {summary["original"]} -> {summary["trimmed"]} columns ({summary["retention"]*100:.1f}% retained)')
 
-    run_bmge('input.fasta', 'trimmed_shallow.fasta', sequence_type='AA', entropy=0.6, gap_threshold=0.2)
-    summary_shallow = trimming_summary('input.fasta', 'trimmed_shallow.fasta')
-    print('\nBMGE -h 0.6 (shallower phylogeny, more sites retained):')
-    print(f'  {summary_shallow["original"]} -> {summary_shallow["trimmed"]} columns ({summary_shallow["retention"]*100:.1f}% retained)')
+if __name__ == '__main__':
+    version = '1.12'   # set to '2.0' for BMGE 2.0
+    for entropy, label in ((0.5, 'default entropy threshold'), (0.6, 'more permissive')):
+        out = f'trimmed_e{entropy}.fasta'
+        run_bmge('input.fasta', out, sequence_type='AA', entropy=entropy, gap_threshold=0.2, version=version)
+        s = trimming_summary('input.fasta', out)
+        print(f'BMGE {version} entropy {entropy} -g 0.2 ({label}):')
+        print(f'  {s["original"]} -> {s["trimmed"]} columns ({s["retention"]*100:.1f}% retained)')
+        if s['retention'] < 0.6:
+            print('  WARNING: more than 40% of columns removed; raise the entropy threshold or skip trimming')
