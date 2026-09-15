@@ -7,7 +7,7 @@ primary_tool: pyOpenMS
 
 ## Version Compatibility
 
-Reference examples tested with: pyOpenMS 3.1+, pandas 2.2+, numpy 1.26+
+Reference examples tested with: pyOpenMS 3.5.0, pandas 2.2+, numpy 1.26+ (pyOpenMS 3.5 takes a `PeptideIdentificationList`, not a plain Python list, for peptide IDs)
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -29,7 +29,7 @@ Scope: this skill owns spectrum-to-peptide matching and PSM/peptide-level FDR. P
 
 1. **Identification confidence is a property of a ranked LIST controlled by target-decoy competition, never a property of one PSM.** The number to act on is a q-value (list-level) or PEP (per-PSM), NOT the engine's raw score. XCorr (Comet), hyperscore (MSFragger/X!Tandem), Andromeda score (MaxQuant), and SpecEValue (MS-GF+) live on different scales, are charge- and length-dependent, and are frequently not even monotone in true probability within a single engine -- which is exactly why rescoring (Percolator/mokapot) exists. "1% FDR" answers "what fraction of the list I keep is wrong," NOT "I am 99% sure of this one ID." The catastrophic error is thresholding on a raw score, or comparing scores across engines.
 
-2. **A q-value is valid only if (a) the decoy DB is a faithful null, (b) targets and decoys competed in ONE concatenated search, and (c) there are enough PSMs for the decoy count to be stable.** Generate decoys at the PROTEIN level then digest (so decoy peptides obey the same enzyme rules), matching the target in size and composition. Concatenated competition gives FDR = (#decoys above threshold) / (#targets above threshold) -- one decoy above threshold estimates one false target. Separate target/decoy searches instead need either the simple Elias-Gygi 2x-decoy estimator FDR = 2 * #decoy / (#target + #decoy) or the more refined mix-max estimator (Keich, Kertesz-Farkas & Noble 2015) -- two distinct options for the separate-search setting, NOT the same formula. Mixing the concatenated and separate forms up is the most common silent FDR error.
+2. **A q-value is valid only if (a) the decoy DB is a faithful null, (b) targets and decoys competed in ONE concatenated search, and (c) there are enough PSMs for the decoy count to be stable.** Generate decoys at the PROTEIN level then digest (so decoy peptides obey the same enzyme rules), matching the target in size and composition. Concatenated competition (one best hit per spectrum) gives FDR = (#decoys above threshold + 1) / (#targets above threshold) -- one decoy above threshold estimates one false target, and the +1 keeps small lists honest. Elias & Gygi's 2 * #decoy / (#target + #decoy) is the older, conservative form of the same concatenated-search estimate, counted over the whole target+decoy list. Separate target/decoy searches (no per-spectrum competition) instead need pi0 * #decoy / #target (Kall, Storey, MacCoss & Noble 2008) or the refined mix-max estimator (Keich, Kertesz-Farkas & Noble 2015). Applying 2d/(t+d) to separate searches over-estimates FDR and throws away identifications (synthetic test: 2.06% estimated vs 0.62% true).
 
 3. **PEP and q-value answer different questions; filtering at "PEP <= 0.01" is far stricter than "q <= 0.01."** PEP (posterior error probability, local FDR) is the probability that THIS PSM is wrong; q-value is the FDR of the list cut at this PSM. FDR is the average of PEP over the accepted set (Kall 2008). The worst PSM in a 1%-FDR list typically has a PEP of 10-50%. Use q-value for list cutoffs; use PEP only for per-ID decisions (e.g. picking one PTM site). And PSM-FDR at 1% does NOT give 1% peptide-FDR or 1% protein-FDR -- each level needs its own estimation; hand protein-level control to protein-inference.
 
@@ -38,7 +38,7 @@ Scope: this skill owns spectrum-to-peptide matching and PSM/peptide-level FDR. P
 - **FDR**: the expected proportion of false positives among ALL accepted items at a threshold -- a property of the whole list.
 - **q-value**: the minimum FDR at which a given PSM is still accepted; monotone after taking the running minimum from the bottom of the ranked list. Filter on q <= 0.01.
 - **PEP (local FDR)**: the probability that THIS PSM is wrong given its score. Local, per-PSM; FDR is the integral of PEP over the accepted set (Kall 2008, "two sides of the same coin").
-- **The estimator must match the search mode.** Concatenated target-decoy competition (TDC): FDR = #decoy / #target (no factor 2 -- one best hit per spectrum already resolves the competition). Separate target and decoy searches: either the simple Elias-Gygi 2x-decoy estimator FDR = 2 * #decoy / (#target + #decoy), or the more refined mix-max estimator (Keich, Kertesz-Farkas & Noble 2015). Mix-max is a distinct, calibrated-score procedure for the separate-search setting -- it is NOT a rename of the 2x formula.
+- **The estimator must match the search mode.** Concatenated target-decoy competition (TDC): FDR = (#decoy + 1) / #target (one best hit per spectrum already resolves the competition; Elias-Gygi's 2 * #decoy / (#target + #decoy) is the older, conservative whole-list form for this same composite search). Separate target and decoy searches: pi0 * #decoy / #target (Kall et al. 2008; pi0 = 1 is valid but conservative), or the refined mix-max estimator (Keich, Kertesz-Farkas & Noble 2015). Mix-max is a distinct, calibrated-score procedure for the separate-search setting.
 
 ## Tool Taxonomy
 
@@ -78,14 +78,23 @@ Default when uncertain: concatenated target-decoy search with Comet or Sage, res
 
 **Goal:** Match tandem mass spectra in an mzML file against a protein FASTA and produce scored PSMs as idXML.
 
-**Approach:** `SimpleSearchEngineAlgorithm` actually scores spectra (the hand-rolled `ProteaseDigestion` loop only digests, it never matches a spectrum). The FASTA must already contain target + decoy sequences concatenated for downstream FDR; decoys carry a recognizable prefix.
+**Approach:** `SimpleSearchEngineAlgorithm` actually scores spectra (the hand-rolled `ProteaseDigestion` loop only digests, it never matches a spectrum). The FASTA must already contain target + decoy sequences concatenated for downstream FDR; decoys carry a recognizable prefix (or set `decoys` to `'true'` to let the engine generate them). Defaults are 10 ppm fragment tolerance and 1 missed cleavage, so set parameters explicitly. The search already annotates `target_decoy` on each hit.
 
 ```python
-from pyopenms import SimpleSearchEngineAlgorithm, IdXMLFile
+from pyopenms import SimpleSearchEngineAlgorithm, IdXMLFile, PeptideIdentificationList
 
 protein_ids = []
-peptide_ids = []
+peptide_ids = PeptideIdentificationList()   # pyOpenMS 3.5+: a plain [] raises TypeError
 search = SimpleSearchEngineAlgorithm()
+p = search.getParameters()
+p.setValue('precursor:mass_tolerance', 10.0)
+p.setValue('precursor:mass_tolerance_unit', 'ppm')
+p.setValue('fragment:mass_tolerance', 0.02)         # HCD Orbitrap; default is 10 ppm
+p.setValue('fragment:mass_tolerance_unit', 'Da')
+p.setValue('peptide:missed_cleavages', 2)           # default is 1
+p.setValue('modifications:fixed', [b'Carbamidomethyl (C)'])
+p.setValue('modifications:variable', [b'Oxidation (M)'])
+search.setParameters(p)
 # spectra are scored against in-silico fragment ions of every candidate peptide
 search.search('sample.mzML', 'human_target_decoy.fasta', protein_ids, peptide_ids)
 
@@ -120,19 +129,20 @@ IDFilter().removeDecoyHits(peptide_ids)
 
 **Goal:** Compute q-values from any engine's PSM table when the search was a single concatenated target-decoy search.
 
-**Approach:** Rank by score, walk down accumulating target and decoy counts, FDR = decoys/targets, then take the running minimum from the bottom to get monotone q-values. The decoy/target form is correct ONLY for concatenated competition; separate searches need either the Elias-Gygi 2x-decoy form or the mix-max estimator (Keich, Kertesz-Farkas & Noble 2015).
+**Approach:** Keep the best hit per spectrum, rank by score, walk down accumulating target and decoy counts, FDR = (decoys + 1)/targets, then take the running minimum from the bottom to get monotone q-values. This form is correct ONLY for concatenated competition; separate searches need pi0 * decoys/targets (Kall et al. 2008) or the mix-max estimator (Keich, Kertesz-Farkas & Noble 2015).
 
 ```python
 import pandas as pd
 
-psms = pd.read_csv('search_results.tsv', sep='\t')
+psms = pd.read_csv('search_results.tsv', sep='\t')   # map engine columns to 'scan', 'score', 'protein'
 psms['is_decoy'] = psms['protein'].str.startswith(('DECOY_', 'REV_', 'XXX_'))
-psms = psms.sort_values('score', ascending=False).reset_index(drop=True)
+# one best hit per spectrum (Comet .txt writes 5 rows per scan by default)
+psms = psms.sort_values('score', ascending=False).drop_duplicates('scan').reset_index(drop=True)
 
 # concatenated target-decoy competition: each decoy above threshold estimates one false target
 targets = (~psms['is_decoy']).cumsum()
 decoys = psms['is_decoy'].cumsum()
-psms['fdr'] = decoys / targets
+psms['fdr'] = (decoys + 1) / targets.clip(lower=1)   # +1: zero decoys is not zero FDR (OpenMS conservative default)
 psms['qvalue'] = psms['fdr'][::-1].cummin()[::-1]   # running min from the bottom -> monotone q-values
 
 kept = psms[(psms['qvalue'] <= 0.01) & (~psms['is_decoy'])]   # 1% list-level FDR
@@ -141,10 +151,10 @@ kept = psms[(psms['qvalue'] <= 0.01) & (~psms['is_decoy'])]   # 1% list-level FD
 ## Per-Method Failure Modes
 
 ### Concatenated vs separate FDR formula mismatch
-**Trigger:** applying #decoy/#target to separately-searched targets and decoys, or 2*decoy/(target+decoy) to concatenated competition.
-**Mechanism:** the factor of 2 accounts for false hits that could land in either independent database; concatenated competition already resolves that by a single best hit per spectrum.
-**Symptom:** systematically under- or over-estimated FDR; irreproducible ID counts.
-**Fix:** confirm the search mode; concatenated -> #decoy/#target; separate -> Elias-Gygi 2x-decoy or the mix-max estimator (Keich, Kertesz-Farkas & Noble 2015). In Percolator, mix-max is the default for separate-search input and `-Y`/`--post-processing-tdc` selects target-decoy competition instead; concatenated input forces TDC automatically.
+**Trigger:** running the concatenated snippet on a merged table from separate searches without per-spectrum competition, or applying Elias-Gygi's 2*decoy/(target+decoy) to separate searches.
+**Mechanism:** Elias-Gygi's factor 2 counts decoys in the combined target+decoy list of a concatenated search; in separate searches every spectrum gets both a target and a decoy hit, so the decoy count estimates false targets directly, scaled by pi0 (the fraction of target PSMs that are incorrect).
+**Symptom:** mis-estimated FDR; 2d/(t+d) on separate searches over-estimates it (synthetic test: 2.06% vs 0.62% true, about a quarter of IDs lost).
+**Fix:** confirm the search mode; concatenated -> (#decoy + 1)/#target; separate -> pi0 * #decoy/#target (Kall et al. 2008) or the mix-max estimator (Keich, Kertesz-Farkas & Noble 2015). In Percolator, mix-max is the default for separate-search input and `-Y`/`--post-processing-tdc` selects target-decoy competition instead; concatenated input forces TDC automatically.
 
 ### Thresholding on raw engine score
 **Trigger:** filtering on XCorr/hyperscore/Andromeda score, or comparing scores from two engines.
@@ -194,9 +204,9 @@ kept = psms[(psms['qvalue'] <= 0.01) & (~psms['is_decoy'])]   # 1% list-level FD
 | Error / symptom | Cause | Solution |
 |---|---|---|
 | pyOpenMS "search" returns peptides but never scores spectra | used `ProteaseDigestion`, which only digests a FASTA | use `SimpleSearchEngineAlgorithm().search(mzML, fasta, protein_ids, peptide_ids)` |
-| `IdXMLFile().load/store` argument error | wrong order | protein_ids FIRST: `IdXMLFile().load(path, protein_ids, peptide_ids)` |
-| FDR ignores decoys / all q-values 0 | decoys not annotated before `FalseDiscoveryRate` | run `PeptideIndexing` with matching `decoy_string` first |
-| R: `MSnbase::readMzIdData` not found | that function name does not exist | use `mzID::mzID(file)` + `flatten()`, or `mzR::openIDfile()` + `psms()` (PSMatch/Spectra is the modern path) |
+| `TypeError: Argument 'pep_ids' has incorrect type (expected ...PeptideIdentificationList, got list)` or `can not handle type` | pyOpenMS 3.5+ needs a `PeptideIdentificationList` | `peptide_ids = PeptideIdentificationList()`; protein_ids FIRST: `IdXMLFile().load(path, protein_ids, peptide_ids)` |
+| `RuntimeError: Meta value 'target_decoy' does not exist` from `FalseDiscoveryRate` | decoys not annotated (e.g. idXML from another engine) | run `PeptideIndexing` with matching `decoy_string` first |
+| All q-values 0 from a hand-rolled table | no +1 correction on a list with zero decoys | use (decoys + 1)/targets; a tiny list cannot reach 1% |
 | Percolator q-method mismatched to search mode | mix-max is the default for separate-search input | for separate searches, mix-max (default) or `-Y`/`--post-processing-tdc` for target-decoy competition; concatenated input forces TDC automatically; use `--picked-protein` for protein FDR |
 | 1% PSM FDR assumed to give 1% protein FDR | each level needs its own estimation | estimate protein-level (picked) FDR -> protein-inference |
 | "PEP <= 0.01" returns far fewer IDs than expected | PEP is per-PSM and far stricter than q-value | filter list cutoffs on q-value; reserve PEP for per-ID decisions |
@@ -206,6 +216,7 @@ kept = psms[(psms['qvalue'] <= 0.01) & (~psms['is_decoy'])]   # 1% list-level FD
 - Elias, J.E. & Gygi, S.P. 2007. Target-decoy search strategy for increased confidence in large-scale protein identifications by mass spectrometry. *Nature Methods* 4(3):207-214.
 - Keich, U., Kertesz-Farkas, A. & Noble, W.S. 2015. Improved false discovery rate estimation procedure for shotgun proteomics. *Journal of Proteome Research* 14(8):3148-3161.
 - Kall, L., Canterbury, J.D., Weston, J., Noble, W.S. & MacCoss, M.J. 2007. Semi-supervised learning for peptide identification from shotgun proteomics datasets. *Nature Methods* 4(11):923-925.
+- Kall, L., Storey, J.D., MacCoss, M.J. & Noble, W.S. 2008. Assigning significance to peptides identified by tandem mass spectrometry using decoy databases. *Journal of Proteome Research* 7(1):29-34.
 - Kall, L., Storey, J.D., MacCoss, M.J. & Noble, W.S. 2008. Posterior error probabilities and false discovery rates: two sides of the same coin. *Journal of Proteome Research* 7(1):40-44.
 - Eng, J.K., Jahan, T.A. & Hoopmann, M.R. 2013. Comet: an open-source MS/MS sequence database search tool. *Proteomics* 13(1):22-24.
 - Kim, S. & Pevzner, P.A. 2014. MS-GF+ makes progress towards a universal database search tool for proteomics. *Nature Communications* 5:5277.

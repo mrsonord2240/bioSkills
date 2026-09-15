@@ -54,7 +54,7 @@ Tell your AI agent what you want to do:
 ## Tips
 - Act on a q-value for list cutoffs and a PEP only for per-ID decisions; "PEP <= 0.01" is far stricter than "q <= 0.01".
 - Never threshold on a raw score (XCorr, hyperscore, Andromeda, SpecEValue) or compare scores across engines.
-- Concatenated competition uses FDR = decoys/targets; separate searches use the mix-max / 2x form -- do not mix them.
+- Concatenated competition uses FDR = (decoys + 1)/targets on one best hit per spectrum; separate searches use pi0 * decoys/targets (Kall 2008) or mix-max (Keich 2015) -- do not mix them.
 - Generate decoys at the protein level then digest, so decoy peptides obey the same enzyme rules.
 - Below ~hundreds of PSMs the decoy FDR is unreliable; a single-protein pulldown is essentially uninformative.
 - Open/mass-tolerant search is for discovery; follow with a closed search on the discovered mods before reporting clean FDR.

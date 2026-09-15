@@ -2,9 +2,9 @@
 
 Demonstrates the load-bearing idea: a raw PSM score is meaningless in isolation;
 the actionable number is a list-level q-value (or a per-PSM PEP). This uses the
-CONCATENATED target-decoy competition estimator FDR = decoys/targets. Separate
-target/decoy searches would instead need the Elias-Gygi 2x-decoy form or the
-distinct mix-max estimator (Keich 2015) -- do not mix them up.
+CONCATENATED target-decoy competition estimator FDR = (decoys + 1)/targets on
+one best hit per spectrum. Separate target/decoy searches would instead need
+pi0 * decoys/targets (Kall 2008) or the mix-max estimator (Keich 2015).
 Self-contained: builds a synthetic table so no input files are needed.'''
 # Reference: numpy 1.26+, pandas 2.2+ | Verify API if version differs
 import numpy as np
@@ -14,26 +14,31 @@ DECOY_PREFIXES = ('DECOY_', 'REV_', 'XXX_')
 TARGET_FDR = 0.01   # 1% list-level FDR, the community standard for peptide IDs
 
 
-def build_demo_table(n_target=2000, n_decoy=2000, seed=0):
-    '''True targets score high, random targets and decoys score low and overlap.'''
+def build_demo_table(n_true=1000, n_null=3000, seed=0):
+    '''Concatenated search: every spectrum gets one best target and one best decoy
+    candidate and keeps the higher (target-decoy competition). True spectra have a
+    high-scoring correct target; null spectra draw target and decoy from one null.'''
     rng = np.random.default_rng(seed)
-    true_targets = rng.normal(3.5, 0.8, n_target // 2)
-    random_targets = rng.normal(1.0, 0.8, n_target - n_target // 2)
-    decoys = rng.normal(1.0, 0.8, n_decoy)
-    proteins = ['TARGET'] * n_target + [f'{DECOY_PREFIXES[0]}prot'] * n_decoy
-    scores = np.concatenate([true_targets, random_targets, decoys])
-    return pd.DataFrame({'protein': proteins, 'score': scores})
+    n = n_true + n_null
+    target = np.concatenate([rng.normal(3.5, 0.8, n_true), rng.normal(1.0, 0.8, n_null)])
+    decoy = rng.normal(1.0, 0.8, n)
+    decoy_wins = decoy > target
+    proteins = np.where(decoy_wins, f'{DECOY_PREFIXES[0]}prot', 'TARGET')
+    return pd.DataFrame({'scan': np.arange(n), 'protein': proteins,
+                         'score': np.maximum(target, decoy),
+                         'is_true': (~decoy_wins) & (np.arange(n) < n_true)})
 
 
 def add_qvalues(psms):
-    '''Concatenated competition: rank by score, FDR = cumulative decoys / targets,
-    then take the running minimum from the bottom to make q-values monotone.'''
+    '''Concatenated competition: best hit per spectrum, rank by score,
+    FDR = (cumulative decoys + 1) / targets, then take the running minimum from
+    the bottom to make q-values monotone.'''
     psms = psms.copy()
     psms['is_decoy'] = psms['protein'].str.startswith(DECOY_PREFIXES)
-    psms = psms.sort_values('score', ascending=False).reset_index(drop=True)
+    psms = psms.sort_values('score', ascending=False).drop_duplicates('scan').reset_index(drop=True)
     targets = (~psms['is_decoy']).cumsum()
     decoys = psms['is_decoy'].cumsum()
-    psms['fdr'] = decoys / targets.clip(lower=1)
+    psms['fdr'] = (decoys + 1) / targets.clip(lower=1)
     psms['qvalue'] = psms['fdr'][::-1].cummin()[::-1]
     return psms
 
