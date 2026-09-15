@@ -49,7 +49,7 @@ Decision: to build a multi-sample callset with correct hom-ref-vs-no-data resolu
 
 Merge also requires two harmonizations, or it silently drops or mis-collapses records:
 - **Consistent representation.** All inputs must be normalized and split the same way first. If cohort A is split biallelic and cohort B keeps multiallelics, merge mis-collapses the shared site. Normalize all inputs identically (governing principle above).
-- **Matching `##contig` headers and sample names.** Merge unions sample columns; duplicate sample names abort unless `--force-samples` renames them, and mismatched contig naming (`chr1` vs `1`) prevents sites from aligning. Fix names/contigs with `bcftools reheader` first.
+- **Matching `##contig` headers and sample names.** Merge unions sample columns; duplicate sample names abort unless `--force-samples` renames them, and mismatched contig naming (`chr1` vs `1`) prevents sites from aligning. Rename samples with `bcftools reheader -s`; rename record CHROM values with `bcftools annotate --rename-chrs map.txt` (reheader only rewrites the `##contig` header lines, so a chr1-vs-1 merge after reheader silently doubles every site).
 
 ## bcftools merge (combine different samples)
 
@@ -118,7 +118,7 @@ bcftools view -r chr1:1e6-2e6      input.vcf.gz -Oz -o region.vcf.gz  # -R file.
 ```
 
 Two nuances that bite:
-- **`-r`/`-R` (regions) vs `-t`/`-T` (targets).** `-r`/`-R` use the index to JUMP to regions (fast, require an index) and consider both POS and an indel's end; `-t`/`-T` STREAM the whole file filtering on POS (no index needed, slower). With `-R`, overlapping regions in the BED can emit a record MORE THAN ONCE and out of order -- deduplicate/sort after, or use non-overlapping regions.
+- **`-r`/`-R` (regions) vs `-t`/`-T` (targets).** `-r`/`-R` use the index to JUMP to regions (fast, require an index) and consider both POS and an indel's end; `-t`/`-T` STREAM the whole file filtering on POS (no index needed, slower). Older bcftools releases could emit a record more than once for overlapping `-R` regions; 1.21 and 1.24 do not. If the version is unknown, merge overlapping intervals first.
 - **Stale INFO counts after subsetting.** Dropping samples makes INFO `AC/AN/AF` wrong. `bcftools view -s` updates `AC/AN` by default (unless `-I/--no-update`), but recompute the full tag set explicitly: `bcftools +fill-tags subset.vcf.gz -Oz -o out.vcf.gz -- -t AC,AN,AF`.
 
 ## Header harmonization (`bcftools reheader`)
@@ -128,7 +128,7 @@ printf 'old_name\tnew_name\n' > rename.txt
 bcftools reheader -s rename.txt input.vcf.gz -o renamed.vcf.gz   # -s renames samples only, no record rewrite
 ```
 
-`reheader` rewrites only the header (fast, no record pass): `-s` maps sample names, `-h` swaps in a whole new header, `-f ref.fa.fai` fixes `##contig` lines to match a reference. Harmonize sample names and contigs BEFORE merge so columns and sites align.
+`reheader` rewrites only the header (fast, no record pass): `-s` maps sample names, `-h` swaps in a whole new header, `-f ref.fa.fai` fixes `##contig` lines (names and lengths) to match a reference but does NOT rename the CHROM column of records. For `chr1`-vs-`1` naming use `bcftools annotate --rename-chrs map.txt in.vcf.gz -Oz -o out.vcf.gz` (map: `old<TAB>new` per line). Harmonize sample names and record contig names BEFORE merge so columns and sites align.
 
 ## Structural variants merge differently -- do NOT use `bcftools merge`
 
@@ -157,8 +157,9 @@ For SVs (`<DEL>`/`<DUP>`/`<INV>`/BND), "the same event" is fuzzy: breakpoints di
 | Duplicate rows / split AF after merge | inputs represented inconsistently, or un-normalized indels | Normalize + split all inputs identically before merge |
 | Fabricated `0/0` genotypes, inflated ref-allele count | `-0/--missing-to-ref` on single-sample merge (not joint genotyping) | Drop `-0`; joint-genotype gVCFs instead (joint-calling) |
 | `not sorted` / index build fails | unsorted records | `bcftools sort` then re-index |
-| `--naive` output corrupt | headers or sample order differ across inputs | Reheader to a common header, or drop `--naive` |
-| Records duplicated / out of order after `-R` | overlapping regions in the BED | Use non-overlapping regions, then sort/dedup |
+| `--naive` refuses or output corrupt | headers or sample order differ across inputs | Reheader to a common header; reorder samples with `bcftools view -s <order>` first (plain concat also refuses a different sample order) |
+| Records duplicated / out of order after `-R` (older bcftools) | overlapping regions in the BED | Use non-overlapping regions, then sort/dedup |
+| Merged cohort has every site twice (`chr1` and `1`) | contig naming differs; `reheader -f` fixed only the header | `bcftools annotate --rename-chrs map.txt` on the records, then merge |
 | Sample-name conflict aborts merge | duplicate sample names across files | `--force-samples`, or `reheader -s` first |
 | Stale `AF` after subsetting samples | INFO not fully recomputed | `bcftools +fill-tags -- -t AC,AN,AF` |
 

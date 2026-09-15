@@ -264,7 +264,7 @@ bcftools view -r chr1:1000-2000,chr2:3000-4000 input.vcf.gz -Oz -o regions.vcf.g
 
 ### Regions (-r/-R) vs Targets (-t/-T)
 
-`-r`/`-R` use the index to JUMP to each region (fast, require an index) and consider both POS and an indel's end; `-t`/`-T` STREAM the whole file filtering on POS (no index needed, slower). With `-R`, overlapping regions in the BED can emit a record more than once and out of order -- use non-overlapping regions or sort/dedup after.
+`-r`/`-R` use the index to JUMP to each region (fast, require an index) and consider both POS and an indel's end; `-t`/`-T` STREAM the whole file filtering on POS (no index needed, slower). Older bcftools releases could emit a record more than once for overlapping `-R` regions; 1.21 and 1.24 do not. If the version is unknown, merge overlapping intervals first.
 
 ### Recompute AC/AN/AF After Subsetting Samples
 
@@ -473,7 +473,7 @@ bcftools merge --force-samples file1.vcf.gz file2.vcf.gz -Oz -o merged.vcf.gz
 - Normalize every input to one representation before merge, concat dedup, or isec -- isec defaults to exact REF+ALT matching, so un-normalized indels look discordant
 - `bcftools merge` is not joint genotyping; do not use `-0/--missing-to-ref` to hide `./.`, and joint-genotype gVCFs when hom-ref-vs-no-data matters
 - Use merge for combining samples, concat for combining regions -- not interchangeable
-- Harmonize sample names (`--force-samples`/`reheader -s`) and `##contig` headers (`reheader -f`) before merge
+- Harmonize sample names (`--force-samples`/`reheader -s`), `##contig` headers (`reheader -f`) and record CHROM names (`annotate --rename-chrs`; reheader does not touch records) before merge
 - Index all input files before merge, isec, or `-r/-R` region operations; sort after naive concat
 - Recompute `AC/AN/AF` with `+fill-tags` after subsetting samples
 - Use `-Ou` (uncompressed BCF) between piped steps for speed
