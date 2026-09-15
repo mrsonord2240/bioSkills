@@ -56,7 +56,7 @@ Scope: this skill owns spectrum-to-peptide matching and PSM/peptide-level FDR. P
 | mokapot | Fondrie & Noble 2021 | Percolator in Python; swappable XGBoost classifier | Python pipelines, Sage output, custom features |
 | MS2Rescore + DeepLC + MS2PIP | Declercq 2022; Bouwmeester 2021; Gabriels 2019 | predicted-RT + predicted-intensity rescoring features | Sharpen target/decoy separation; immunopeptidomics |
 | Spectral-library search | -- | match empirical reference spectra (intensity + RT) | Faster/more specific for known peptides -> spectral-libraries |
-| Protein grouping / protein FDR | Savitski 2015; The 2016 | picked / picked-group FDR | route OUT -> protein-inference |
+| Protein grouping / protein FDR | Savitski 2015; The 2022 | picked / picked-group FDR | route OUT -> protein-inference |
 | PTM site localization | -- | per-site PEP, localization scoring | route OUT -> ptm-analysis |
 
 ## Decision Tree by Scenario
@@ -106,7 +106,7 @@ IdXMLFile().store('search_results.idXML', protein_ids, peptide_ids)
 
 **Goal:** Convert raw PSM scores into q-values and keep only PSMs at 1% FDR.
 
-**Approach:** `PeptideIndexing` maps each PSM back to proteins and flags target vs decoy from the decoy prefix; `FalseDiscoveryRate.apply` runs the concatenated competition; `IDFilter` keeps q <= 0.01. This is the real pyOpenMS path -- not a hand-rolled decoy/target ratio of unknown provenance.
+**Approach:** `PeptideIndexing` maps each PSM back to proteins and flags target vs decoy from the decoy prefix -- needed for idXML from other engines or after changing the FASTA; `SimpleSearchEngineAlgorithm` output above is already annotated and can go straight to `FalseDiscoveryRate`. `FalseDiscoveryRate.apply` runs the concatenated competition; `IDFilter` keeps q <= 0.01. This is the real pyOpenMS path -- not a hand-rolled decoy/target ratio of unknown provenance.
 
 ```python
 from pyopenms import PeptideIndexing, FalseDiscoveryRate, IDFilter, FASTAFile
@@ -129,13 +129,19 @@ IDFilter().removeDecoyHits(peptide_ids)
 
 **Goal:** Compute q-values from any engine's PSM table when the search was a single concatenated target-decoy search.
 
-**Approach:** Keep the best hit per spectrum, rank by score, walk down accumulating target and decoy counts, FDR = (decoys + 1)/targets, then take the running minimum from the bottom to get monotone q-values. This form is correct ONLY for concatenated competition; separate searches need pi0 * decoys/targets (Kall et al. 2008) or the mix-max estimator (Keich, Kertesz-Farkas & Noble 2015).
+**Approach:** Keep the best hit per spectrum, rank by score, walk down accumulating target and decoy counts, FDR = (decoys + 1)/targets, then take the running minimum from the bottom to get monotone q-values. `score` must be higher-is-better, and the decoy prefix must match the engine's (Sage and FragPipe write lowercase `rev_`); a table with no recognised decoys must stop, not pass every PSM. This form is correct ONLY for concatenated competition; separate searches need pi0 * decoys/targets (Kall et al. 2008; pi0 = 1 is the conservative default) or the mix-max estimator (Keich, Kertesz-Farkas & Noble 2015; Percolator's default for separate-search input).
 
 ```python
 import pandas as pd
 
+DECOY_PREFIXES = ('decoy_', 'rev_', 'xxx_')   # compared lower-cased: DECOY_, REV_ / REV__ (MaxQuant), rev_ (Sage, FragPipe), XXX_
+
 psms = pd.read_csv('search_results.tsv', sep='\t')   # map engine columns to 'scan', 'score', 'protein'
-psms['is_decoy'] = psms['protein'].str.startswith(('DECOY_', 'REV_', 'XXX_'))
+# score must be HIGHER-is-better: Sage sage_discriminant_score or Comet xcorr as is;
+# E-values (Comet e-value, MS-GF+ SpecEValue) as -log10(E-value)
+psms['is_decoy'] = psms['protein'].str.lower().str.startswith(DECOY_PREFIXES)
+if not psms['is_decoy'].any():
+    raise ValueError('no decoy PSMs recognised: check the decoy prefix, or the table was already decoy-filtered')
 # one best hit per spectrum (Comet .txt writes 5 rows per scan by default)
 psms = psms.sort_values('score', ascending=False).drop_duplicates('scan').reset_index(drop=True)
 
@@ -206,6 +212,8 @@ kept = psms[(psms['qvalue'] <= 0.01) & (~psms['is_decoy'])]   # 1% list-level FD
 | pyOpenMS "search" returns peptides but never scores spectra | used `ProteaseDigestion`, which only digests a FASTA | use `SimpleSearchEngineAlgorithm().search(mzML, fasta, protein_ids, peptide_ids)` |
 | `TypeError: Argument 'pep_ids' has incorrect type (expected ...PeptideIdentificationList, got list)` or `can not handle type` | pyOpenMS 3.5+ needs a `PeptideIdentificationList` | `peptide_ids = PeptideIdentificationList()`; protein_ids FIRST: `IdXMLFile().load(path, protein_ids, peptide_ids)` |
 | `RuntimeError: Meta value 'target_decoy' does not exist` from `FalseDiscoveryRate` | decoys not annotated (e.g. idXML from another engine) | run `PeptideIndexing` with matching `decoy_string` first |
+| Every PSM passes 1% FDR, or `ValueError: no decoy PSMs recognised` | decoy prefix not matched (Sage and FragPipe write lowercase `rev_`) | compare prefixes lower-cased; check `psms['protein'].str[:6].value_counts()` |
+| Empty 1% list from a table snippet | lower-is-better score (E-value, SpecEValue) used as `score` | use `-log10(E-value)` |
 | All q-values 0 from a hand-rolled table | no +1 correction on a list with zero decoys | use (decoys + 1)/targets; a tiny list cannot reach 1% |
 | Percolator q-method mismatched to search mode | mix-max is the default for separate-search input | for separate searches, mix-max (default) or `-Y`/`--post-processing-tdc` for target-decoy competition; concatenated input forces TDC automatically; use `--picked-protein` for protein FDR |
 | 1% PSM FDR assumed to give 1% protein FDR | each level needs its own estimation | estimate protein-level (picked) FDR -> protein-inference |
@@ -229,6 +237,8 @@ kept = psms[(psms['qvalue'] <= 0.01) & (~psms['is_decoy'])]   # 1% list-level FD
 - Bouwmeester, R., Gabriels, R., Hulstaert, N., Martens, L. & Degroeve, S. 2021. DeepLC can predict retention times for peptides that carry as-yet unseen modifications. *Nature Methods* 18:1363-1369.
 - Gabriels, R., Martens, L. & Degroeve, S. 2019. Updated MS2PIP web server delivers fast and accurate MS2 peak intensity prediction for multiple fragmentation methods, instruments and labeling techniques. *Nucleic Acids Research* 47(W1):W295-W299.
 - Declercq, A., Bouwmeester, R., Hirschler, A., Carapito, C., Degroeve, S., Martens, L. & Gabriels, R. 2022. MS2Rescore: data-driven rescoring dramatically boosts immunopeptide identification rates. *Molecular & Cellular Proteomics* 21(8):100266.
+- Savitski, M.M., Wilhelm, M., Hahne, H., Kuster, B. & Bantscheff, M. 2015. A scalable approach for protein false discovery rate estimation in large proteomic data sets. *Molecular & Cellular Proteomics* 14(9):2394-2404.
+- The, M., Samaras, P., Kuster, B. & Wilhelm, M. 2022. Reanalysis of ProteomicsDB using an accurate, sensitive, and scalable false discovery rate estimation approach for protein groups. *Molecular & Cellular Proteomics* 21(12):100437.
 - Wen, B., Freestone, J., Riffle, M., MacCoss, M.J., Noble, W.S. & Keich, U. 2025. Assessment of false discovery rate control in tandem mass spectrometry analysis using entrapment. *Nature Methods* 22:1454-1463.
 
 ## Related Skills

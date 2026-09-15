@@ -10,7 +10,7 @@ Self-contained: builds a synthetic table so no input files are needed.'''
 import numpy as np
 import pandas as pd
 
-DECOY_PREFIXES = ('DECOY_', 'REV_', 'XXX_')
+DECOY_PREFIXES = ('decoy_', 'rev_', 'xxx_')   # compared lower-cased; Sage and FragPipe write rev_
 TARGET_FDR = 0.01   # 1% list-level FDR, the community standard for peptide IDs
 
 
@@ -34,7 +34,9 @@ def add_qvalues(psms):
     FDR = (cumulative decoys + 1) / targets, then take the running minimum from
     the bottom to make q-values monotone.'''
     psms = psms.copy()
-    psms['is_decoy'] = psms['protein'].str.startswith(DECOY_PREFIXES)
+    psms['is_decoy'] = psms['protein'].str.lower().str.startswith(DECOY_PREFIXES)
+    if not psms['is_decoy'].any():
+        raise ValueError('no decoy PSMs recognised: check the decoy prefix')
     psms = psms.sort_values('score', ascending=False).drop_duplicates('scan').reset_index(drop=True)
     targets = (~psms['is_decoy']).cumsum()
     decoys = psms['is_decoy'].cumsum()
