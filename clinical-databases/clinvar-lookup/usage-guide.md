@@ -31,7 +31,7 @@ Tell the agent what to do:
 
 ### Single Variant Queries
 
-> "What is the ClinVar VCV classification for chr17:43094464:G:A in BRCA1, and is there an ENIGMA-VCEP curation? Report germline classification, last evaluated date, and review status."
+> "What is the ClinVar VCV classification for chr17:43106487:A:C in BRCA1, and is there an ENIGMA-VCEP curation? Report germline classification, last evaluated date, and review status."
 
 > "Look up rs121913529 in ClinVar; show all SCV-level assertions with submitter, classification, condition, and date last evaluated."
 
@@ -53,7 +53,7 @@ Tell the agent what to do:
 
 > "Annotate this exome VCF with ClinVar germline + oncogenicity + somatic-clinical-impact + review status + VCEP affiliation using bcftools."
 
-> "For my 50k rare-variant cohort, batch-query ClinVar via myvariant.info with `fields=clinvar.review_status,clinvar.variant_id` and merge against gnomAD grpmax FAF95."
+> "For my 50k rare-variant cohort, batch-query ClinVar via myvariant.info with `fields=clinvar.rcv.review_status,clinvar.variant_id` and merge against gnomAD grpmax FAF95."
 
 ### Cross-Database Join
 
@@ -75,7 +75,7 @@ Tell the agent what to do:
 - `CLNSIG` in `clinvar.vcf.gz` is VCV-level (variant-level aggregate); for condition-specific classification parse RCV-level XML.
 - 2024 XML schema replaces `<ClinVarSet>` with `<VariationArchive>`; pipelines built before September 2024 must be re-targeted.
 - Star rating 3 (VCEP) supersedes lower-star records per ClinGen FDA Recognition 2018; do not auto-aggregate by date.
-- `Conflicting interpretations` is 1-star (not 2-star as sometimes reported); inspect `CLNSIGCONF` to see whether the conflict is clinically meaningful.
+- `criteria provided, conflicting classifications` (formerly "conflicting interpretations") is 1-star (not 2-star as sometimes reported); inspect `CLNSIGCONF` to see whether the conflict is clinically meaningful.
 - Use ClinGen Allele Registry CA ID (`https://reg.clinicalgenome.org/`) for any cross-database join; ClinVar VariationID was renumbered during the 2017 schema redesign.
 - ClinVar somatic classifications (`ONCDN`, `SCIDN`) were added in 2024; pre-2024 pipelines miss them silently.
 - Conflict resolution is slow: only ~4% of BRCA1 missense VUS conflicts have reached consensus despite years of effort.
