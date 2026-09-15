@@ -1,14 +1,14 @@
 # DIA Analysis - Usage Guide
 
 ## Overview
-Identifies and quantifies proteins from data-independent acquisition (DIA) mass spectrometry by scoring reconstructed fragment-chromatogram peak groups against a decoy null, then filtering the output at the correct q-value level and context. Covers DIA-NN library-free (directDIA), predicted-library, and library-based routes, with notes on Spectronaut, OpenSWATH, and EncyclopeDIA. The crux: every wide-window MS2 is chimeric, so the engine deconvolves rather than matches, and "1% FDR" only means something once the level (precursor/peptide/protein-group) and context (run vs experiment-wide/global) are named.
+Identifies and quantifies proteins from data-independent acquisition (DIA) mass spectrometry by scoring reconstructed fragment-chromatogram peak groups against a decoy null, then filtering the output at the correct q-value level and context. Covers DIA-NN library-free search (which in DIA-NN is a predicted-library search) and library-based routes, with notes on Spectronaut, OpenSWATH, and EncyclopeDIA. The crux: every wide-window MS2 is chimeric, so the engine deconvolves rather than matches, and "1% FDR" only means something once the level (precursor/peptide/protein-group) and context (run vs experiment-wide/global) are named.
 
 ## Prerequisites
 ```bash
 pip install pandas pyarrow numpy
 # CLI: DIA-NN (recommended), MSFragger-DIA/FragPipe, OpenSWATH, EncyclopeDIA
 # Commercial: Spectronaut
-# Staggered/overlapping data: ProteoWizard msconvert (demultiplexing) before search
+# Staggered/overlapping data: DIA-NN supports them natively; other engines need ProteoWizard msconvert (peak picking first, then demultiplexing)
 ```
 
 ## Quick Start
@@ -22,7 +22,7 @@ Tell your AI agent what you want to do:
 ## Example Prompts
 
 ### Library-Free and Predicted-Library Analysis
-> "Run DIA-NN via the predicted-library route against UniProt human, two-pass, with auto mass accuracy"
+> "Run DIA-NN via the predicted-library route against UniProt human, two-pass, with MS1/MS2 mass accuracy fixed for our timsTOF"
 
 > "Set up library-free directDIA for my Astral 2-Th narrow-window runs"
 
@@ -50,8 +50,8 @@ Tell your AI agent what you want to do:
 > "Set up auditable run/experiment/global q-values with OpenSWATH and PyProphet"
 
 ## What the Agent Will Do
-1. Identify the acquisition design (fixed/variable/staggered windows, diaPASEF, narrow-window Astral) and demultiplex staggered data at conversion if needed
-2. Choose the route -- predicted-library (default), library-free directDIA, or library-based -- per the decision tree
+1. Identify the acquisition design (fixed/variable/staggered windows, diaPASEF, narrow-window Astral) and demultiplex staggered data at conversion if the engine lacks native overlapping-window support
+2. Choose the route -- predicted-library / library-free (default) or library-based -- per the decision tree
 3. Run DIA-NN (or the chosen engine) with auto mass accuracy and two-pass global FDR
 4. Read report.parquet and filter at the correct LEVEL (precursor + protein-group) and CONTEXT (run + global for matrices)
 5. Convert unquantified zeros to NA, then hand the log2 matrix to quantification and differential-abundance
@@ -62,7 +62,7 @@ Tell your AI agent what you want to do:
 - For cohorts, filter on Global.PG.Q.Value, not the per-run Q.Value, or the experiment-wide error inflates.
 - DIA-NN 1.9+ writes report.parquet by default; loaders assuming report.tsv silently break.
 - A matrix protein count below the report count is expected (extra 5% run-specific PG filter), not data loss.
-- Let DIA-NN auto-optimize tolerances with --mass-acc 0 rather than hard-coding ppm from another instrument.
+- Fix mass accuracies per instrument (timsTOF 15/15, Orbitrap Astral 10/4, TripleTOF 20/20 ppm MS2/MS1); --mass-acc 0 is optimised on the first run and reused, so results depend on run order.
 - Aim for >= 6 MS2 points across each LC peak; if quant is noisy, the window/cycle design may be the cause.
 - Convert DIA-NN's 0 (not-quantified) to NA before log2 or normalization.
 

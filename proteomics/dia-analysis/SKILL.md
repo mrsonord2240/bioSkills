@@ -1,13 +1,13 @@
 ---
 name: bio-proteomics-dia-analysis
-description: Analyzes data-independent acquisition (DIA) proteomics by scoring reconstructed fragment-chromatogram peak groups against a decoy null with DIA-NN (library-free directDIA, library-based, or deep-learning predicted-library routes), Spectronaut, OpenSWATH, and EncyclopeDIA. Frames the deliverable around q-value LEVEL (precursor/peptide/protein-group) and CONTEXT (run vs experiment-wide/global) rather than a bare "1% FDR", and around the duty-cycle-vs-selectivity acquisition tradeoff (window design, staggered demultiplexing, diaPASEF, narrow-window Astral). Use when identifying and quantifying proteins from DIA mass spectrometry runs and filtering DIA-NN report.parquet/matrix output. Building the spectral library itself is spectral-libraries; normalization and protein roll-up is quantification; statistical testing of the matrix is differential-abundance.
+description: Analyzes data-independent acquisition (DIA) proteomics by scoring reconstructed fragment-chromatogram peak groups against a decoy null with DIA-NN (library-free search against a deep-learning predicted library, or library-based search), Spectronaut, OpenSWATH, and EncyclopeDIA. Frames the deliverable around q-value LEVEL (precursor/peptide/protein-group) and CONTEXT (run vs experiment-wide/global) rather than a bare "1% FDR", and around the duty-cycle-vs-selectivity acquisition tradeoff (window design, staggered demultiplexing, diaPASEF, narrow-window Astral). Use when identifying and quantifying proteins from DIA mass spectrometry runs and filtering DIA-NN report.parquet/matrix output. Building the spectral library itself is spectral-libraries; normalization and protein roll-up is quantification; statistical testing of the matrix is differential-abundance.
 tool_type: cli
 primary_tool: diann
 ---
 
 ## Version Compatibility
 
-Reference examples tested with: DIA-NN 1.9+, pandas 2.2+, pyarrow 15+
+Reference examples tested with: pandas 3.0.5 (report filter, run); DIA-NN flags checked against the DIA-NN README at 1.9.2, 2.0 and master 2.6.1 (not executed); easypqp 0.1.59 CLI source (checked 2026-09-15)
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -19,9 +19,9 @@ package and adapt the example to match the actual API rather than retrying.
 # DIA Analysis -- Scoring Reconstructed Peak Groups Against a Decoy Null, Filtered at the Right q-Value Context
 
 **"Identify and quantify proteins from my DIA runs"** -> Reconstruct, per candidate peptide, a set of co-eluting fragment extracted-ion chromatograms (XICs) and score whether that peak group is real against a decoy null -- because every wide-isolation-window MS2 is chimeric, so the problem is deconvolution and peak-group scoring, not spectrum matching.
-- CLI: `diann --fasta-search` for library-free (directDIA) discovery and quantification
-- CLI: `diann --lib predicted.speclib` for the deep-learning predicted-library route (the modern default)
-- CLI: `diann --lib experimental.tsv` for an experimental or chromatogram library
+- CLI: `diann --fasta-search --predictor` for library-free search (in DIA-NN this IS the predicted-library route; the modern default)
+- CLI: `diann --lib predicted.speclib` to reuse an in-silico library predicted earlier
+- CLI: `diann --lib empirical.parquet` for an experimental or chromatogram library
 - CLI: `OpenSwathWorkflow` + `pyprophet` when explicit run/experiment/global FDR contexts must be auditable
 
 Scope: this skill OWNS running the DIA search engine and FILTERING its output at the correct q-value level and context. Building the library (experimental, chromatogram, predicted) -> spectral-libraries. Normalization, MaxLFQ roll-up, and matrix summarization -> quantification. Statistical testing of the protein matrix -> differential-abundance. Loading raw vendor/mzML data -> data-import. OUT OF SCOPE: DDA spectrum-to-peptide matching (peptide-identification); pathway enrichment of the hit list; acquiring the data (the analyst inherits the window design from the core facility).
@@ -32,7 +32,7 @@ Scope: this skill OWNS running the DIA search engine and FILTERING its output at
 
 2. **"1% FDR" is meaningless without naming the LEVEL and the CONTEXT -- state both.** LEVEL = precursor vs peptide vs protein-group (filtering precursors at 1% does NOT give proteins at 1%; control both). CONTEXT = run-specific vs experiment-wide vs global (Rosenberger 2017). Naively filtering N runs at per-run 1% inflates the experiment-wide error: 1% per run accumulates false positives across the union, severe at hundreds-to-thousands of runs. For a cross-run matrix, filter on the GLOBAL protein-group q-value, not the per-run one. The column chosen (`Q.Value` vs `Global.PG.Q.Value`) is the decision.
 
-3. **The predicted-library route is now the default recommendation.** Library-based search is sensitive but capped by an ill-matched library (wrong organism/tissue/mods silently limits coverage with no error). Library-free directDIA finds sample-specific content but its larger implicit search space can INFLATE IDs if FDR is not controlled across the two-pass process -- worst on wide-window chimeric data. The compromise the field converged on: predict an in-silico library for the whole FASTA digest (DIA-NN built-in predictor, or Prosit/AlphaPeptDeep) and search against THAT, getting directDIA's "no wet-lab library" with library-based's bounded, better-calibrated search.
+3. **The predicted-library route is now the default recommendation.** Library-based search is sensitive but capped by an ill-matched library (wrong organism/tissue/mods silently limits coverage with no error). Library-free directDIA finds sample-specific content but its larger implicit search space can INFLATE IDs if FDR is not controlled across the two-pass process -- worst on wide-window chimeric data. The compromise the field converged on: predict an in-silico library for the whole FASTA digest (DIA-NN built-in predictor, or Prosit/AlphaPeptDeep) and search against THAT, getting directDIA's "no wet-lab library" with library-based's bounded, better-calibrated search. In DIA-NN these are not separate routes: its "library-free" search is exactly this search against a library predicted from the whole FASTA digest.
 
 ## Chimerism, Deconvolution, and the Window Design the Analyst Inherits
 
@@ -42,7 +42,7 @@ Selectivity is set by isolation-window WIDTH. Narrower window = fewer co-isolate
 
 - Fixed windows (classic SWATH): 32 x 25 Th. Simple; wastes selectivity because precursor density is non-uniform across m/z.
 - Variable windows: widths chosen so each holds roughly equal precursor density (narrow where the proteome is dense ~600-800 m/z). Orbitrap best practice.
-- Staggered / overlapping windows + demultiplexing (Amodei 2019): two interleaved patterns offset by half a window; demultiplexing recovers effective windows of half the physical width without halving duty cycle. CRITICAL trap: staggered data MUST be demultiplexed at conversion (`msconvert --filter "demultiplex optimization=overlap_only"`) or every tool sees the wide physical window and the selectivity benefit is silently lost. MSX (randomized window combinations) is largely historical.
+- Staggered / overlapping windows + demultiplexing (Amodei 2019): two interleaved patterns offset by half a window; demultiplexing recovers effective windows of half the physical width without halving duty cycle. DIA-NN supports overlapping-window schemes natively (DIA-NN docs), and skipping demultiplexing cost only a few % coverage in a community benchmark (DIA-NN GitHub #438), so demultiplexing is optional there. Engines without native support need demultiplexed input, converted with vendor peak picking as the FIRST filter (msconvert warns that vendor peak picking has no effect otherwise): `msconvert run.raw --mzML --filter "peakPicking vendor msLevel=1-" --filter "demultiplex optimization=overlap_only massError=10ppm"`. Current DIA-NN also reads Thermo .raw directly, including native Linux builds. MSX (randomized window combinations) is largely historical.
 - diaPASEF (Meier 2020): on timsTOF the isolation tile rides the m/z-vs-ion-mobility diagonal, so only precursors sharing BOTH m/z AND mobility co-isolate -- the mobility dimension is an orthogonal selectivity filter for free. The engine extracts a 4D peak group (RT x m/z x fragment x mobility).
 - Narrow-window Astral (Guzman 2024): >200 Hz MS/MS makes 2-Th windows feasible across the whole range; at 2 Th the MS2 is nearly non-chimeric, which makes library-free directDIA far more trustworthy than it was on 25-Th SWATH.
 
@@ -68,18 +68,18 @@ Tool leadership moves fast (Astral, AlphaDIA, DIA-NN releases). Confirm the curr
 |----------|-------------|-----|
 | Discovery cohort, no wet-lab library | `diann --fasta-search --gen-spec-lib` (predicted route) then search against it | Bounded, better-calibrated search vs raw directDIA; the modern default |
 | Quick single-run discovery, Astral 2-Th data | DIA-NN library-free (directDIA) | Near-non-chimeric MS2 makes directDIA trustworthy |
-| Have a deep experimental/chromatogram library | `diann --lib library.tsv` (no `--fasta-search`) | Targeted extraction is most sensitive when the library matches |
+| Have a deep experimental/chromatogram library | `diann --lib library.parquet --fasta db.fasta` (no `--fasta-search`) | Targeted extraction is most sensitive when the library matches |
 | Need auditable run/experiment/global FDR for a regulated submission | OpenSWATH + PyProphet | Explicit q-value contexts per Rosenberger 2017 |
 | Building chromatogram-library depth for one project on Orbitrap | EncyclopeDIA (GPF) -> .elib -> DIA-NN | Empirical RT and real fragmentation in the project's own LC |
-| Large cohort (hundreds-thousands of runs) | DIA-NN `--reanalyse`, filter on `Global.PG.Q.Value` | Two-pass global FDR controls cross-run error accumulation |
-| Staggered/overlapping acquisition | Demultiplex at conversion FIRST, then any engine | Skipping demux silently keeps wide-window interference |
+| Large cohort (hundreds-thousands of runs) | Empirical library from 20-100 high-quality runs (library-free search + `--gen-spec-lib`), then search ALL runs with that library, MBR off, fixed mass accuracies; filter on `Global.Q.Value`/`Global.PG.Q.Value` | DIA-NN docs: MBR is a convenience feature (second pass held in memory); one fixed library and fixed tolerances keep batches comparable |
+| Staggered/overlapping acquisition | DIA-NN directly (native support); for engines without it, demultiplex at conversion with peak picking first | Demultiplexing is an optional few-% gain in DIA-NN; required where the engine assumes non-overlapping windows |
 | PTM / peptidoform-resolved work | DIA-NN `--peptidoforms` + matched variable mods | Peptidoform-resolved target-decoy scoring |
 
-Default when uncertain: DIA-NN with the predicted-library route (`--fasta-search --gen-spec-lib --reanalyse`), letting `--mass-acc 0` auto-optimize, then filter `Q.Value <= 0.01 & PG.Q.Value <= 0.01` per run and `Global.PG.Q.Value <= 0.01` for cross-run matrices.
+Default when uncertain: DIA-NN with the predicted-library route (`--fasta-search --gen-spec-lib --reanalyse`), mass accuracies fixed for the instrument, then filter `Q.Value`, `PG.Q.Value`, `Global.Q.Value` and `Global.PG.Q.Value` at 0.01 for cross-run matrices (DIA-NN 1.9.x with MBR: `Lib.Q.Value`/`Lib.PG.Q.Value` instead of the `Global.*` pair).
 
 ## DIA-NN -- Predicted-Library (directDIA) Route
 
-The default route: digest the FASTA in silico, predict a library, and search the DIA data against it in one command. `--mass-acc 0` lets DIA-NN auto-optimize tolerances per file (do not hard-code ppm from another instrument). `--reanalyse` enables the two-pass global FDR / MBR that controls directDIA double-dipping.
+The default route: digest the FASTA in silico, predict a library, and search the DIA data against it in one command. Mass accuracies of 0 (the default) mean automatic: DIA-NN optimises them on the FIRST run and reuses them for every other run, so results depend on run order (`--individual-mass-acc` optimises per run). For production analyses the DIA-NN docs prefer fixed values per instrument: timsTOF `--mass-acc 15 --mass-acc-ms1 15` (shown below), Orbitrap Astral `--mass-acc 10 --mass-acc-ms1 4`, TripleTOF 6600/ZenoTOF `--mass-acc 20 --mass-acc-ms1 20`. `--reanalyse` enables MBR: a second pass using the empirical library built in the first. `--qvalue 0.01` tightens DIA-NN's default 5% precursor filter.
 
 ```bash
 diann \
@@ -87,10 +87,10 @@ diann \
     --lib "" --fasta uniprot_human.fasta --fasta-search \
     --gen-spec-lib --predictor \
     --out diann_out/report.parquet \
-    --out-lib diann_out/report-lib.tsv \
+    --out-lib diann_out/report-lib.parquet \
     --qvalue 0.01 \
     --matrices \
-    --mass-acc 0 \
+    --mass-acc 15 --mass-acc-ms1 15 \
     --reanalyse --smart-profiling \
     --cut K*,R* --missed-cleavages 1 \
     --min-pep-len 7 --max-pep-len 30 \
@@ -100,15 +100,15 @@ diann \
 
 ## DIA-NN -- Library-Based Route
 
-Supply an existing library (experimental, chromatogram-derived, or a previously predicted `.speclib`). Omit `--fasta-search`: extraction is targeted to the library content.
+Supply an existing library (experimental, chromatogram-derived, or a previously predicted `.speclib`). Omit `--fasta-search`: extraction is targeted to the library content. Still pass `--fasta` so proteins are annotated from the database (add `--reannotate` for a third-party library). DIA-NN recommends DIA-NN-generated `.parquet`/`.speclib` libraries; for third-party libraries (e.g. FragPipe) compatibility should be verified for each software version, settings and data type.
 
 ```bash
 diann \
     --f sample1.mzML --f sample2.mzML \
-    --lib spectral_library.tsv \
+    --lib spectral_library.parquet --fasta uniprot_human.fasta \
     --out diann_out/report.parquet \
     --qvalue 0.01 --matrices \
-    --mass-acc 0 \
+    --mass-acc 15 --mass-acc-ms1 15 \
     --reanalyse --smart-profiling \
     --threads 8
 ```
@@ -123,16 +123,18 @@ report.stats.tsv        # per-run statistics
 report.pg_matrix.tsv    # protein-group wide matrix
 report.pr_matrix.tsv    # precursor wide matrix (verify exact dotting vs installed version)
 report.gg_matrix.tsv    # gene-group wide matrix
-report-lib.tsv          # generated library (if --gen-spec-lib)
+report-lib.parquet      # generated empirical library (.parquet since 1.9.1; predicted libraries are *.predicted.speclib)
 ```
 
 ```python
 import pandas as pd, numpy as np
 report = pd.read_parquet('diann_out/report.parquet')  # NOT report.tsv on 1.9+
 
-# Per-run filter: both LEVELS. Add Global.PG.Q.Value for the cross-run matrix.
+# Run-level LEVELS (Q.Value, PG.Q.Value) plus experiment-wide CONTEXT (Global.Q.Value, Global.PG.Q.Value) for a
+# cross-run matrix. DIA-NN 1.9.x with MBR: use Lib.Q.Value / Lib.PG.Q.Value instead of the Global.* pair.
 filt = report[(report['Q.Value'] <= 0.01) &
               (report['PG.Q.Value'] <= 0.01) &
+              (report['Global.Q.Value'] <= 0.01) &
               (report['Global.PG.Q.Value'] <= 0.01)]  # 0.01 = standard 1% FDR
 
 # Pivot to a protein matrix from the filtered long report.
@@ -142,18 +144,21 @@ pg = np.log2(pg.replace(0, np.nan))  # DIA-NN writes 0 for not-quantified; log2(
 
 The `*_matrix.tsv` files apply an EXTRA 5% run-specific protein FDR (DIA-NN default, `--matrix-spec-q`), so the matrix protein count can be lower than the report count. A report-vs-matrix mismatch is EXPECTED, not a bug -- do not panic and do not compare the two counts as if they should match.
 
-## Generating a Predicted Library Outside DIA-NN
+## Building an Empirical Library from FragPipe DDA Results (EasyPQP)
 
-DIA-NN's built-in predictor covers the common case. For an external predicted library from FragPipe search results, EasyPQP builds it; FragPipe can also emit a DIA-NN-format library directly.
+DIA-NN's built-in predictor covers predicted libraries. To build an EMPIRICAL library from FragPipe DDA search results, EasyPQP first converts each run's pepXML and spectra into pickles, then assembles the library from all of them; FragPipe can also emit a DIA-NN-format library directly.
 
 ```bash
-# Real easypqp subcommands: library, convert, insilico-library (NOT a convert --format diann).
+# Real easypqp subcommands: convert, library, insilico-library (NOT a convert --format diann).
+# 1) per run: pepXML + spectra (mzXML; MGF for timsTOF) -> <run>.psmpkl and <run>.peakpkl ('psmpkl'/'peakpkl' in the names)
+easypqp convert --pepxml interact-run1.pep.xml --spectra run1.mzXML --psms run1.psmpkl --peaks run1.peakpkl
+# 2) library from all pickles; --psmtsv requires --peptidetsv
 easypqp library \
-    --psmtsv psm.tsv \
+    --psmtsv psm.tsv --peptidetsv peptide.tsv \
     --rt_reference irt.tsv \
-    --peptide_fdr_threshold 0.01 \
-    --protein_fdr_threshold 0.01 \
-    --out library.tsv
+    --out library.tsv \
+    *.psmpkl *.peakpkl
+# With psm.tsv + peptide.tsv given, easypqp ignores --psm/--peptide/--protein_fdr_threshold (FragPipe already filtered).
 # FragPipe's DIA workflow can emit a DIA-NN-format library directly -- prefer that when in FragPipe.
 ```
 
@@ -175,7 +180,7 @@ easypqp library \
 **Trigger:** filtering N runs at per-run `Q.Value <= 0.01` and unioning.
 **Mechanism:** 1% per run accumulates across the union -> experiment-wide error far above 1%.
 **Symptom:** inflated total protein list; irreproducible "hits" in differential testing.
-**Fix:** filter on `Global.PG.Q.Value <= 0.01` (and optionally `Lib.PG.Q.Value <= 0.01`) for the matrix.
+**Fix:** filter `Global.Q.Value <= 0.01` and `Global.PG.Q.Value <= 0.01` for the matrix; on DIA-NN 1.9.x with MBR use `Lib.Q.Value`/`Lib.PG.Q.Value` instead (1.9.2 docs; the note is absent from 2.x docs). For very large cohorts, search all runs with an empirical library built from 20-100 runs.
 
 ### Match-between-runs (MBR)
 **Trigger:** treating MBR-transferred quant values as equally confident as directly identified ones.
@@ -184,21 +189,22 @@ easypqp library \
 **Fix:** rely on DIA-NN's global/empirical-library q-values (IonQuant uses an explicit MBR-FDR model); do not disable `--reanalyse` then trust per-run counts.
 
 ### Staggered acquisition
-**Trigger:** running staggered/overlapping data through any engine without demultiplexing.
+**Trigger:** running staggered/overlapping data without demultiplexing through an engine that lacks native overlapping-window support.
 **Mechanism:** the engine sees the wide physical window, keeping all the interference the staggering was meant to remove.
 **Symptom:** noisy directDIA, poor selectivity on data that should be clean.
-**Fix:** demultiplex at conversion (`msconvert --filter "demultiplex optimization=overlap_only"`) before search.
+**Fix:** demultiplex at conversion with peak picking first (`--filter "peakPicking vendor msLevel=1-" --filter "demultiplex optimization=overlap_only massError=10ppm"`), or use DIA-NN, which handles overlapping windows natively.
 
 ## Quantitative Thresholds
 
 | Threshold | Source | Rationale |
 |-----------|--------|-----------|
-| Precursor q-value `<= 0.01` | DIA-NN default (`--qvalue 0.01`) | Standard 1% per-precursor FDR (run context). |
+| Precursor q-value `<= 0.01` | `--qvalue 0.01` (DIA-NN default is 0.05) | Standard 1% per-precursor FDR (run context); the main report is otherwise filtered only at 5%. |
+| `Global.Q.Value <= 0.01` | DIA-NN docs | Experiment-wide precursor FDR, recommended alongside `Global.PG.Q.Value`. |
 | `Global.PG.Q.Value <= 0.01` | Rosenberger 2017 | Experiment-wide protein-group FDR for cross-run matrices; run-specific PG q-value is NOT enough for a cohort. |
 | Matrix run-specific PG filter `0.05` | DIA-NN default (`--matrix-spec-q`) | Extra 5% run-specific protein FDR applied only when building matrices -> report vs matrix count differs (expected). |
-| `Lib.(PG.)Q.Value <= 0.01` | Demichev recommendation | For very large cohorts, also filter the global library-pass q-values to keep experiment-wide FDR honest. |
+| `Lib.Q.Value`, `Lib.PG.Q.Value <= 0.01` | DIA-NN 1.9.2 docs | With MBR on 1.9.x these replace `Global.Q.Value`/`Global.PG.Q.Value` (library from the first MBR pass). |
 | Points per peak `>= 6` across FWHM | community rule of thumb | Below this, quant precision and peak detection degrade; drives window/cycle design. |
-| Mass accuracy auto (`--mass-acc 0`) | DIA-NN | Wrong tolerance silently kills IDs; let DIA-NN auto-calibrate rather than hard-coding ppm from another instrument. |
+| Fixed mass accuracy (MS2/MS1 ppm): timsTOF 15/15, Orbitrap Astral 10/4, TripleTOF 6600/ZenoTOF 20/20 | DIA-NN docs | Auto (0) is optimised on the first run and reused, so results depend on run order; fixed per-instrument values are preferred for production analyses. |
 | Missed cleavages `1` | -- | Trypsin standard; raising it expands the search space and the multiple-testing burden. |
 
 ## Common Errors
@@ -209,9 +215,10 @@ easypqp library \
 | Matrix protein count < report count, looks like data loss | Matrices apply an extra 5% run-specific PG filter | Expected; do not compare the two counts as if equal |
 | `-Inf` after log2 of the matrix | DIA-NN writes 0 for not-quantified | Convert `0 -> NaN` BEFORE log2/normalization |
 | Cohort "hits" do not reproduce | Filtered per-run `Q.Value` only, not global | Filter `Global.PG.Q.Value <= 0.01` for the matrix |
-| `easypqp convert --format diann` errors | No such interface; `convert`/`library`/`insilico-library` are the real subcommands | Use `easypqp library` (with `--psmtsv`/`--rt_reference`) or let FragPipe emit a DIA-NN-format library |
+| `easypqp convert --format diann` errors | No such option; `convert`/`library`/`insilico-library` are the real subcommands | `easypqp convert` per run, then `easypqp library ... *.psmpkl *.peakpkl`, or let FragPipe emit a DIA-NN-format library |
+| `easypqp library`: `No PSMs files present` or `There is a psm.tsv but no peptide.tsv` | positional `*.psmpkl`/`*.peakpkl` from `easypqp convert` missing; `--psmtsv` given without `--peptidetsv` | run `convert` first; pass both tsvs and the pickles |
 | `KeyError: 'report.pr.matrix.tsv'` | Matrix filename dotting varies by version (`pr_matrix` vs `pr.matrix`) | `ls` the output dir after a run and match the installed version's exact names |
-| directDIA looks noisy on overlapping-window data | Staggered data not demultiplexed | Demultiplex at conversion before search |
+| Noisy results on overlapping-window data in an engine without native support | Staggered data not demultiplexed | Demultiplex at conversion (peak picking first); DIA-NN supports overlapping windows natively |
 
 ## References
 
