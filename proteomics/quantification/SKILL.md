@@ -7,7 +7,7 @@ primary_tool: MSstats
 
 ## Version Compatibility
 
-Reference examples tested with: MSstats 4.10+, MSnbase 2.28+, iq 1.9+, numpy 1.26+, pandas 2.2+
+Reference examples tested with: MSstats 4.14.2, MSnbase 2.32.0, iq 2.0.1, numpy 2.5.3, pandas 3.0.5 (checked 2026-09-15)
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -20,11 +20,11 @@ package and adapt the example to match the actual API rather than retrying.
 
 **"Quantify proteins from my mass spec data"** -> Reconstruct a protein-by-sample abundance matrix from peptide/reporter ion signals, choosing a summarizer and normalizer that match where the signal physically came from -- because the measurement's physical origin sets an error that no normalization can remove.
 - R: `MSstats::dataProcess()` (Tukey median polish summarization) for label-free feature-to-protein
-- R: `iq::maxLFQ()` for the real MaxLFQ algorithm (delayed normalization + maximal peptide-ratio least-squares)
+- R: `iq::maxLFQ()` for MaxLFQ maximal peptide-ratio least-squares (normalize runs first; it does no delayed normalization)
 - R: `MSnbase::quantify(reporters=TMT10)` + `purityCorrect()` for isobaric reporter extraction
 - R/Python: sample-loading + IRS scaling to bridge TMT plexes; per-sample median centering for LFQ
 
-Scope: this skill OWNS converting peptide/PSM/reporter signal into a normalized protein abundance matrix (LFQ, TMT/iTRAQ, SILAC; summarization; normalization; IRS). Statistical testing of the matrix -> differential-abundance. DIA quant mechanics and DIA-NN execution -> dia-analysis. Parsing MaxQuant/DIA-NN outputs -> data-import. Razor/shared-peptide group assignment -> protein-inference. OUT OF SCOPE: missing-value imputation and the downshift false-positive trap (modeled in differential-abundance), and absolute copy-number calibration beyond a one-line pointer.
+Scope: this skill OWNS converting peptide/PSM/reporter signal into a normalized protein abundance matrix (LFQ, TMT/iTRAQ, SILAC; summarization; normalization; IRS). Statistical testing of the matrix -> differential-abundance. DIA quant mechanics and DIA-NN execution -> dia-analysis. Parsing MaxQuant/DIA-NN outputs -> data-import. Razor/shared-peptide group assignment -> protein-inference. OUT OF SCOPE: missing-value imputation and the downshift false-positive trap (modeled in differential-abundance), and absolute copy-number calibration beyond a one-line pointer. Research quantification must not be used to classify individual patients or choose treatment; route those questions to validated clinical assays.
 
 ## The Single Most Important Modern Insight
 
@@ -37,7 +37,7 @@ Scope: this skill OWNS converting peptide/PSM/reporter signal into a normalized 
 | Tool / method | Citation | Mechanism / role | When |
 |---|---|---|---|
 | MaxLFQ | Cox 2014 | delayed normalization + maximal shared-peptide log-ratio least-squares; peptide scale cancels in pairwise ratios | label-free DDA/DIA relative quant across many samples |
-| `iq::maxLFQ()` | Cox 2014 | R implementation of the real MaxLFQ; call it, do NOT reimplement | running MaxLFQ outside MaxQuant/DIA-NN |
+| `iq::maxLFQ()` | Cox 2014; Pham 2020 | R implementation of MaxLFQ ratio extraction (no delayed normalization; give it run-normalized log2 input); call it, do NOT reimplement | running MaxLFQ outside MaxQuant/DIA-NN |
 | MSstats Tukey median polish | Choi 2014 | iteratively subtract peptide-medians + run-medians in log space; column effects = per-sample abundance; 50% breakdown | robust label-free default summarizer |
 | msqrob (peptide-level) | Sticker 2020; Goeminne 2016 | treats the peptide effect as a covariate not noise; ridge + empirical Bayes + Huber | accuracy-critical small-n, unbalanced coverage (route OUT to differential-abundance) |
 | iBAQ | -- | sum(peptide intensities) / number of theoretically observable tryptic peptides | rank / order-of-magnitude within-sample abundance |
@@ -52,7 +52,7 @@ Scope: this skill OWNS converting peptide/PSM/reporter signal into a normalized 
 
 | Scenario | Recommended | Why |
 |---|---|---|
-| Label-free DDA, MaxQuant evidence.txt | `MSstats::dataProcess` (TMP) | robust summarization with censored-value handling, the workhorse |
+| Label-free DDA, MaxQuant evidence.txt | `MSstats::dataProcess` (TMP) | robust summarization, the workhorse; censored (AFT) imputation only with `MBimpute = TRUE` |
 | Label-free, need MaxLFQ outside MaxQuant | `iq::maxLFQ()` | the real algorithm; median centering is NOT MaxLFQ |
 | Label-free DIA matrix | -> dia-analysis | DIA-NN MaxLFQ at fragment level is owned there |
 | TMT, accuracy critical | SPS-MS3 acquisition + reporter extraction | co-isolation rejected at the instrument; software cannot fully undo compression |
@@ -71,18 +71,26 @@ Default when uncertain: label-free DDA -> `MSstats::dataProcess` with `summaryMe
 
 **Goal:** Turn MaxQuant feature-level evidence into a normalized protein-level abundance matrix.
 
-**Approach:** Reformat to MSstats input, then `dataProcess` applies median equalization and Tukey median polish (robust to outlier peptides, 50% breakdown) with censored-value handling for label-free missingness.
+**Approach:** Read the MaxQuant tables with quoting off (protein names contain apostrophes), reformat to MSstats input, then `dataProcess` applies median equalization and Tukey median polish (robust to outlier peptides, 50% breakdown). With `MBimpute = FALSE` there is no censored-value model; `MBimpute = TRUE` is MSstats' AFT imputation of censored features (the only censoring route in MSstats; `groupComparison` has none). Otherwise model missingness downstream (proDA/msqrob2 in differential-abundance).
 
 ```r
 library(MSstats)
 
+# quote = '' and comment.char = '': MaxQuant text fields contain apostrophes (5'-nucleotidase); default
+# quoting silently truncates the table with only an 'EOF within quoted string' warning
+evidence <- read.table('evidence.txt', sep = '\t', header = TRUE, quote = '', comment.char = '')
+protein_groups <- read.table('proteinGroups.txt', sep = '\t', header = TRUE, quote = '', comment.char = '')
+stopifnot(nrow(evidence) == length(readLines('evidence.txt')) - 1)  # every data line was read
+
 maxquant_input <- MaxQtoMSstatsFormat(
-    evidence = read.table('evidence.txt', sep = '\t', header = TRUE),
-    proteinGroups = read.table('proteinGroups.txt', sep = '\t', header = TRUE),
+    evidence = evidence,
+    proteinGroups = protein_groups,
     annotation = read.csv('annotation.csv')
 )
 
-# TMP = Tukey median polish; censoredInt='NA' treats missing intensities as left-censored
+# TMP = Tukey median polish. MBimpute = FALSE: no censoring model (censoredInt has no effect), and on/off
+# proteins later come out of groupComparison as log2FC -Inf / issue 'oneConditionMissing'.
+# MBimpute = TRUE is the AFT censored-imputation route (censoredInt = 'NA' marks NA intensities as censored).
 processed <- dataProcess(maxquant_input, normalization = 'equalizeMedians',
                          summaryMethod = 'TMP', censoredInt = 'NA', MBimpute = FALSE)
 
@@ -93,12 +101,12 @@ protein_abundance <- processed$ProteinLevelData
 
 **Goal:** Produce MaxLFQ protein intensities from a peptide quant matrix.
 
-**Approach:** Call `iq::maxLFQ()`, which implements Cox 2014 delayed normalization and maximal peptide-ratio least-squares. Per-sample median centering shares only the name and silently gives a different answer.
+**Approach:** Call `iq::maxLFQ()`, which implements the Cox 2014 maximal peptide-ratio least-squares step. It does NOT perform delayed normalization, so run-level loading offsets pass straight into the estimates: median-normalize each run's peptide log2 intensities first (`iq::preprocess(median_normalization = TRUE)` does this for long-format input). Per-sample median centering of the protein matrix shares only the name and silently gives a different answer.
 
 ```r
 library(iq)
 
-# rows = peptide ions, columns = samples, values = log2 intensities for ONE protein group
+# rows = peptide ions, columns = samples, values = RUN-NORMALIZED log2 intensities for ONE protein group
 result <- maxLFQ(peptide_log2_matrix)
 protein_estimate <- result$estimate    # one MaxLFQ value per sample
 ```
@@ -107,7 +115,7 @@ protein_estimate <- result$estimate    # one MaxLFQ value per sample
 
 **Goal:** Correct per-sample loading differences before testing.
 
-**Approach:** Subtract each sample's median log2 intensity (corrects LOCATION only; it cannot manufacture variance, so it is the safe default). Median centering normalizes; it does NOT summarize peptides to proteins.
+**Approach:** Subtract each sample's median log2 intensity (corrects LOCATION only and cannot manufacture variance). It assumes most proteins are unchanged and changes are roughly symmetric: an up-heavy quantified set shifts every fold change, so check the median fold change of presumed-null proteins or normalize on a stable subset. Median centering normalizes; it does NOT summarize peptides to proteins.
 
 ```python
 import numpy as np
@@ -133,8 +141,10 @@ raw <- readMSData('experiment.mzML', mode = 'onDisk')
 # method='max' for centroided spectra; reporters=TMT10 defines the 126-131 reporter m/z
 quant <- quantify(raw, reporters = TMT10, method = 'max')
 
-# makeImpuritiesMatrix has manufacturer-default templates; REPLACE with lot-specific Certificate values
-imp <- makeImpuritiesMatrix(x = 10)
+# edit = FALSE: the default edit = TRUE calls edit(M) and blocks under Rscript / on a cluster.
+# x = 10 is the manufacturer template; REPLACE with lot-specific Certificate of Analysis values, e.g.
+# imp <- makeImpuritiesMatrix(filename = 'lot_coa.csv', edit = FALSE)  # layout as MSnbase extdata TMT6plexPurityCorrections.csv
+imp <- makeImpuritiesMatrix(x = 10, edit = FALSE)
 quant <- purityCorrect(quant, imp)
 ```
 
@@ -142,7 +152,7 @@ quant <- purityCorrect(quant, imp)
 
 **Goal:** Make reporter intensities comparable across separate TMT runs.
 
-**Approach:** Absolute reporter intensities for the same protein differ 2-5x between plexes because each plex samples a random point on the elution profile. Sample-loading normalization fixes within-run loading; the Internal Reference Scaling bridge (Plubell 2017) then pins each plex's pooled reference channel to a common per-protein value. Order: SL, then IRS.
+**Approach:** Absolute reporter intensities for the same protein differ 2-5x between plexes because each plex samples a random point on the elution profile. Sample-loading normalization fixes within-run loading; the Internal Reference Scaling bridge (Plubell 2017) then pins each plex's pooled reference channel to a common per-protein value. Order: SL, then IRS. A protein whose reference is 0 or missing in any plex cannot be bridged: mask and report it rather than letting it become Inf/NaN. Check the bridge on the NON-reference channels (IRS forces the reference channels equal by construction).
 
 ```python
 import numpy as np
@@ -155,10 +165,14 @@ def sample_loading_normalize(plex):
 
 def irs_scale(plexes, ref_cols):
     refs = pd.concat([p[ref] for p, ref in zip(plexes, ref_cols)], axis=1)
-    geomean = np.exp(np.log(refs.replace(0, np.nan)).mean(axis=1))    # per-protein geometric mean of references
+    refs = refs.where(refs > 0)    # a 0 or missing reference cannot anchor the bridge
+    unbridged = refs.index[refs.isna().any(axis=1)]
+    if len(unbridged):
+        print(f'IRS: {len(unbridged)} proteins lack a reference in >=1 plex; set to NaN: {list(unbridged[:10])}')
+    geomean = np.exp(np.log(refs).mean(axis=1, skipna=False))    # per-protein geometric mean of references
     out = []
-    for p, ref in zip(plexes, ref_cols):
-        factor = geomean / p[ref]    # per-protein per-plex scaling factor
+    for i, p in enumerate(plexes):
+        factor = geomean / refs.iloc[:, i]    # per-protein per-plex scaling factor
         out.append(p.mul(factor, axis=0))
     return out
 ```
@@ -167,7 +181,7 @@ def irs_scale(plexes, ref_cols):
 
 **Goal:** Compute heavy/light ratios while preserving on/off biology and flagging label artifacts.
 
-**Approach:** A protein present only in the heavy channel is the interesting biology, not a NaN to discard. Verify labeling efficiency (>=95%, target 97-98%) on a heavy-only pilot and assess Arg->Pro conversion before trusting any ratio.
+**Approach:** A protein present only in the heavy channel may be the interesting biology (or a detection-limit dropout), so do not discard it -- but keep it in a presence flag, not as +/-Inf inside the ratio matrix, where it turns pandas SDs into NaN and stops `eBayes(trend=TRUE, robust=TRUE)`. Verify labeling efficiency (>=95%, target 97-98%) on a heavy-only pilot and assess Arg->Pro conversion before trusting any ratio.
 
 ```python
 import numpy as np
@@ -176,13 +190,13 @@ import numpy as np
 SILAC_SHIFTS = {'Arg10': 10.008269, 'Lys8': 8.014199, 'Arg6': 6.020129, 'Lys6': 6.020129}
 
 def silac_log2_ratio(heavy, light):
-    if heavy > 0 and light > 0:
-        return np.log2(heavy / light)
-    if heavy > 0 and light == 0:
-        return np.inf     # present only in heavy: real on/off biology, do NOT discard as NaN
-    if light > 0 and heavy == 0:
-        return -np.inf
-    return np.nan
+    '''Vectorized over arrays/Series: log2 H/L (NaN unless both channels quantified) plus a presence flag.'''
+    heavy, light = np.asarray(heavy, dtype=float), np.asarray(light, dtype=float)
+    h, l = heavy > 0, light > 0    # NaN compares False
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.where(h & l, np.log2(heavy / light), np.nan)
+    presence = np.select([h & l, h, l], ['both', 'H-only', 'L-only'], default='none')    # report H-only/L-only separately
+    return ratio, presence
 ```
 
 ## Per-Method Failure Modes
@@ -191,7 +205,7 @@ def silac_log2_ratio(heavy, light):
 **Trigger:** A homebrew function named `maxlfq` that only subtracts per-sample medians.
 **Mechanism:** Real MaxLFQ is delayed normalization plus a maximal peptide-ratio least-squares solve; median centering shares only the name.
 **Symptom:** Plausible-looking but systematically different intensities; unbalanced peptide sets handled wrongly.
-**Fix:** Call `iq::maxLFQ()`, DIA-NN, or MaxQuant.
+**Fix:** Call `iq::maxLFQ()` on run-normalized input, DIA-NN, or MaxQuant.
 
 ### TMT ratio compression
 **Trigger:** MS2-only reporter quant on a complex sample.
@@ -207,7 +221,7 @@ def silac_log2_ratio(heavy, light):
 
 ### Isotopic impurity matrix mis-applied
 **Trigger:** Using the default/example impurity matrix, the wrong lot, or a transposed/mis-ordered (127N vs 127C) matrix.
-**Mechanism:** A few percent of each channel bleeds to +/-1 Da neighbors; wrong values mis-subtract, negative corrected intensities get clipped.
+**Mechanism:** A few percent of each channel bleeds to +/-1 Da neighbors; wrong values mis-subtract, negative corrected intensities get clipped. In TMT10 order (126, 127N, 127C, ...) N and C channels interleave, so the 13C +1 Da neighbour of 126 is 127C, two positions away -- a CoA sheet laid out as adjacent columns is misplaced.
 **Symptom:** Adjacent channels silently biased; extreme contrasts placed in adjacent channels confounded.
 **Fix:** Use the lot-specific Certificate of Analysis values; randomize channel-to-condition assignment.
 
@@ -221,7 +235,7 @@ def silac_log2_ratio(heavy, light):
 **Trigger:** Returning NaN whenever either channel is zero.
 **Mechanism:** A protein present only in heavy (or only light) is the interesting biology, thrown away.
 **Symptom:** Largest true changes silently dropped before analysis.
-**Fix:** Record present-in-one-channel cases as +/-Inf or flag them; route honest absence handling to differential-abundance.
+**Fix:** Flag present-in-one-channel cases (H-only / L-only) in a separate column and report them as a presence table; do not put +/-Inf into the matrix handed to limma. Route honest absence handling to differential-abundance.
 
 ### Spectral counting / NSAF used for fold changes
 **Trigger:** Reaching for PSM counts for quantitative comparison.
@@ -255,7 +269,11 @@ def silac_log2_ratio(heavy, light):
 | `log2(0) = -inf` in the matrix | MaxQuant writes 0 for "not quantified" | replace 0 -> NaN before any transform |
 | Reading `Intensity` when ratios needed | `Intensity` is raw, not normalized; `iBAQ` is within-sample only | use `LFQ intensity` for between-sample LFQ ratios (see data-import) |
 | Median centering called MaxLFQ | homebrew shares only the name | call `iq::maxLFQ()` / DIA-NN / MaxQuant |
-| `MBimpute=TRUE` injects values silently | AFT imputation in `dataProcess` | set `MBimpute=FALSE`; model missingness in differential-abundance |
+| On/off proteins get `log2FC = -Inf`, `issue = oneConditionMissing`; no censored handling | `MBimpute=FALSE` means no censoring model; MSstats' AFT exists only in `dataProcess(MBimpute=TRUE)` | keep `MBimpute=TRUE` for the MSstats AFT route, or keep `FALSE` and model missingness with proDA/msqrob2 (differential-abundance) |
+| `EOF within quoted string` and far fewer rows than the file | default `read.table` quoting on MaxQuant tables with apostrophes | `read.table(..., quote = '', comment.char = '')` or `data.table::fread`; check the row count |
+| Script hangs at `makeImpuritiesMatrix` under Rscript | default `edit = TRUE` opens an editor | `makeImpuritiesMatrix(x = 10, edit = FALSE)` or `filename = 'lot_coa.csv', edit = FALSE` |
+| Whole plex rows become Inf/NaN after IRS | reference channel 0 or missing for that protein | mask references `<= 0`/NaN and report the unbridged proteins |
+| `eBayes`: `prior.weights contain NA values` on SILAC ratios | +/-Inf on/off codes inside the ratio matrix | NaN ratio plus a presence flag column; drop rows with no finite ratio before `lmFit` |
 | Cross-plex TMT comparison is invalid | no reference channel / no IRS | add a pooled reference channel per plex, apply SL then IRS |
 | MSnbase deprecation warnings | MSnbase is in maintenance mode | current pipelines use Spectra + QFeatures (`readQFeatures`, `aggregateFeatures`) |
 
@@ -275,6 +293,7 @@ def silac_log2_ratio(heavy, light):
 - Goeminne LJE, Gevaert K, Clement L. 2016. Peptide-level robust ridge regression improves estimation, sensitivity, and specificity in data-dependent quantitative label-free shotgun proteomics. *Mol Cell Proteomics* 15(2):657-668.
 - Sticker A, Goeminne L, Martens L, Clement L. 2020. Robust summarization and inference in proteome-wide label-free quantification. *Mol Cell Proteomics* 19(7):1209-1219.
 - Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. 2020. DIA-NN: neural networks and interference correction enable deep proteome coverage in high throughput. *Nat Methods* 17(1):41-44.
+- Pham TV, Henneman AA, Jimenez CR. 2020. iq: an R package to estimate relative protein abundances from ion quantification in DIA-MS-based proteomics. *Bioinformatics* 36(8):2611-2613.
 - Lin MH, Wu PS, Wong TH, Lin IY, Lin J, Cox J, Yu SH. 2022. Benchmarking differential expression, imputation and quantification methods for proteomics data. *Brief Bioinform* 23(3):bbac138.
 
 ## Related Skills
