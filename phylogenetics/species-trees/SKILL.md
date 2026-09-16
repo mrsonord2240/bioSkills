@@ -84,6 +84,12 @@ Do not reflexively coalescent-everything: where ILS is low the two trees agree a
 # Then concatenate into one file, one Newick per line:
 #   cat loci/*.contracted.treefile > gene_trees.nwk
 
+# Leaf-name consistency check BEFORE running ASTRAL. A sample renamed in a subset of gene
+# trees (e.g. merging runs from two labs, S03 vs S03_b) becomes a silent EXTRA species --
+# ASTRAL exits 0 and prints no warning, it just returns one taxon too many at low support.
+grep -oE '[(,][A-Za-z0-9_.]+:' gene_trees.nwk | tr -d '(,:' | sort -u > leaf_names.txt
+wc -l leaf_names.txt   # must equal your KNOWN species count, not just "some number"
+
 # Primary estimate: wASTRAL weights quartets by gene-tree support+length (noisy gene trees)
 wastral -i gene_trees.nwk -o species_wastral.tre 2> species_wastral.log
 
@@ -91,12 +97,15 @@ wastral -i gene_trees.nwk -o species_wastral.tre 2> species_wastral.log
 astral -t 8 -i gene_trees.nwk -o species.tre 2> species.log     # -t 8 = 8 threads here
 astral -u 2 -i gene_trees.nwk -o species_annot.tre              # full localPP + q1/q2/q3 for all 3 resolutions
 astral --root OUTGROUP -i gene_trees.nwk -o species_rooted.tre  # rooting improves branch-length estimation
+grep '#Species' species.log                                     # cross-check against leaf_names.txt / your true count
 
 # Multi-copy gene families (no pre-orthology) -> ASTRAL-Pro, with a gene->species map:
 astral-pro -a gene2species.txt -i family_trees.nwk -o species_pro.tre
 ```
 
 `gene2species.txt` has one line per gene copy, `<gene name> <species name>` separated by a space or tab (e.g. `Sp_A_1	Sp_A`). Without `-a`, ASTRAL-Pro treats every distinct leaf name as a species: family trees with copies named `Sp_A_1`/`Sp_A_2` return a tree of gene copies, with exit 0 and no warning.
+
+The same `-a`/`--mapping` flag exists on plain `astral` and `wastral` (checked via `astral --help`, same ASTER binary family as `astral-pro`), and the same silent failure happens there: if `leaf_names.txt` has more names than known species, or `#Species` in the log exceeds the true species count, build a `name2species.txt` map the same way (`<gene-tree label> <true species>`, one renamed label per line, e.g. `S03_b	S03`) and rerun with `astral -a name2species.txt -i gene_trees.nwk -o species.tre` -- verified this collapses `#Species` back to the true count and removes the spurious low-support taxon (see Common Errors).
 
 ASTRAL returns an UNROOTED tree; root with an outgroup afterward. Branch-length units depend on the binary: ASTER `astral`/`astral-pro` (ASTRAL-IV / ASTRAL-Pro3) default to `--length SULength` (substitutions per site, tip lengths written); use `--length CULength` for coalescent units, or read `CULength` from the `-u 2` labels. `wastral` and classic Java ASTRAL write coalescent units with undefined tip lengths. Coalescent units are not time either. The classic Java `astral.5.7.8.jar` inverts the flags: there `-t` is the annotation level (`-t 2` full, `-t 8` quartet support, `-t 10` polytomy test) and there is no `-u`.
 
@@ -186,6 +195,7 @@ The gCF/sCF cutoffs of 50/33 are practical heuristics relative to the dataset (a
 | `iqtree ... --gcf ... --scfl` exits "Do not specify --scf or --gcf with --scfl" | gCF and likelihood sCF cannot share one call | Run `-t ... --gcf` and `-te ... --scfl` as two calls |
 | High bootstrap, low gCF, called resolved | Concatenation in the anomaly zone | Run coalescent; trust it on low-gCF branches; polytomy test |
 | Most gene families dropped | Forced single-copy orthology | Use ASTRAL-Pro on multi-copy family trees |
+| `#Species` in the log exceeds the known species count; exit 0, no warning | A sample renamed in some gene trees (e.g. merged from two labs) reads as an extra species | Compare leaf sets across gene trees before running; `astral -a name2species.txt` to map renamed labels back |
 | Network claimed from any discordance | ILS also produces discordance | Confirm q2 != q3 (D / HyDe / QuIBL) before invoking gene flow |
 
 ## References
