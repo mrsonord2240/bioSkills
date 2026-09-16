@@ -104,6 +104,8 @@ mcmctree mcmctree_post.ctl     # control file has usedata = 2 in.BV  (PAML 4.10.
 
 PAML 4.10 control-file details (checked on 4.10.10): `BDparas` needs a trailing flag (`BDparas = 1 1 0.1 m`; `m` multiplicative, `c` conditional), and the tree file needs an `ntaxa ntree` header line (e.g. `8 1`) before the calibrated Newick.
 
+Multi-locus data (several genes/partitions dated jointly under one tree): set `ndata` to the number of loci (default 1) and concatenate that many PHYLIP blocks into one `seqfile`, each block starting with its own `ntaxa nsites` header line and the same taxon names, one blank line apart -- the old-style `ndata` option documented in PAML's own `examples/ndata/README.txt` ("the multiple alignments are in one sequence data file, one after another"), with every locus sharing the single treefile. `examples/mcmctree_setup.py`'s `write_control_file`/`generate_prior_and_posterior_configs` take `ndata` as a keyword (default 1); pass e.g. `ndata=2` for a two-locus concatenated PHYLIP file.
+
 TreeAnnotator writes node ages and HPDs into `[&height_median=...,height_95%_HPD={lo,hi}]` comments; Bio.Phylo leaves them in `clade.comment` (`clade.confidence` is None) and node order differs between trees with different topologies, so match clades by tip set:
 
 ```python
