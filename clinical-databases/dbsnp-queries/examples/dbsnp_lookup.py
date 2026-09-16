@@ -151,7 +151,9 @@ def batch_normalize_rsids(rsids):
     mv = myvariant.MyVariantInfo()
     fields = ['dbsnp.rsid', 'gnomad_exome.af.af', 'gnomad_genome.af.af', 'clinvar.rcv.clinical_significance']
     hits_by_rsid = {}
-    for entry in mv.getvariants(rsids, fields=fields):
+    # de-duplicate before querying: a repeated input rsID otherwise sends the same query twice and
+    # myvariant returns two copies of the same hit(s), doubling every per-allele value below.
+    for entry in mv.getvariants(list(dict.fromkeys(rsids)), fields=fields):
         hits_by_rsid.setdefault(entry.get('query'), []).append(entry)
     rows = []
     for rsid in dict.fromkeys(rsids):
