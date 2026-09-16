@@ -1,6 +1,6 @@
 ---
 name: bio-phylo-species-trees
-description: Estimates species trees under the multispecies coalescent from per-locus gene trees with the modern ASTER astral binary (ASTRAL-III/wASTRAL/ASTRAL-Pro), plus SVDQuartets, BPP, and StarBEAST2. Covers why a species tree is not a gene tree, why each locus has its own genealogy that disagrees by incomplete lineage sorting (ILS) even with zero error, why concatenation is statistically inconsistent and positively misleading in the anomaly zone where more loci converge on the wrong tree with full support, why gene-tree estimation error biases summary methods, that localPP is not bootstrap and ASTRAL branch lengths are coalescent units, and how minority-quartet symmetry separates ILS from introgression. Use when multi-locus discordance, rapid radiations, anomaly-zone risk, concordance-factor interpretation, or concatenation-vs-coalescent choice arise. Routes per-locus gene-tree inference and gCF/sCF to modern-tree-inference, dating to divergence-dating, orthology to comparative-genomics/ortholog-inference.
+description: Estimates species trees under the multispecies coalescent from per-locus gene trees with the modern ASTER astral binary (ASTRAL-III/wASTRAL/ASTRAL-Pro), plus SVDQuartets, BPP, and StarBEAST2. Covers why a species tree is not a gene tree, why each locus has its own genealogy that disagrees by incomplete lineage sorting (ILS) even with zero error, why concatenation is statistically inconsistent and positively misleading in the anomaly zone where more loci converge on the wrong tree with full support, why gene-tree estimation error biases summary methods, that localPP is not bootstrap and ASTRAL branch-length units depend on the binary and the `--length` flag (not always coalescent units), and how minority-quartet symmetry separates ILS from introgression. Use when multi-locus discordance, rapid radiations, anomaly-zone risk, concordance-factor interpretation, or concatenation-vs-coalescent choice arise. Routes per-locus gene-tree inference and gCF/sCF to modern-tree-inference, dating to divergence-dating, orthology to comparative-genomics/ortholog-inference.
 tool_type: mixed
 primary_tool: ASTRAL-III
 ---
@@ -74,7 +74,7 @@ Do not reflexively coalescent-everything: where ILS is low the two trees agree a
 
 **Goal:** Turn per-locus gene trees into a species tree that is consistent under the MSC, after removing gene-tree noise that would bias the quartet counts.
 
-**Approach:** Infer one gene tree per locus with branch support (modern-tree-inference), contract branches below ~10% support to polytomies (which ASTRAL handles correctly), then run wASTRAL as the primary estimate and `astral` for the classic localPP / polytomy-test workflow.
+**Approach:** Infer one gene tree per locus with branch support (modern-tree-inference), contract branches below ~10% STANDARD bootstrap support to polytomies (a near no-op under UFBoot), then run wASTRAL as the default primary estimate -- its per-branch weighting is the main guard against gene-tree error -- and `astral` for the classic localPP / polytomy-test workflow.
 
 ```bash
 # Per-locus gene trees with support live upstream in modern-tree-inference:
