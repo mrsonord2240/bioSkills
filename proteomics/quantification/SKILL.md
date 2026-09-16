@@ -198,8 +198,46 @@ def irs_scale(plexes, ref_cols):
 
 **Goal:** Compute heavy/light ratios while preserving on/off biology and flagging label artifacts.
 
-**Approach:** A protein present only in the heavy channel may be the interesting biology (or a detection-limit dropout), so do not discard it -- but keep it in a presence flag, not as +/-Inf inside the ratio matrix, where it turns pandas SDs into NaN and stops `eBayes(trend=TRUE, robust=TRUE)`. Verify labeling efficiency (>=95%, target 97-98%) on a heavy-only pilot and assess Arg->Pro conversion before trusting any ratio.
+**Approach:** A protein present only in the heavy channel may be the interesting biology (or a detection-limit dropout), so do not discard it -- but keep it in a presence flag, not as +/-Inf inside the ratio matrix, where it turns pandas SDs into NaN and stops `eBayes(trend=TRUE, robust=TRUE)`. Verify labeling efficiency (>=95%, target 97-98%) on a heavy-only pilot and assess Arg->Pro conversion before trusting any ratio -- both bias every ratio in the same direction, so neither shows up as extra scatter.
 
+### Check labeling efficiency and Arg->Pro first
+```python
+import numpy as np, pandas as pd
+
+def silac_labeling_efficiency(pilot, heavy='Intensity H', light='Intensity L'):
+    '''Incorporation on a HEAVY-ONLY pilot (cells grown in heavy medium, NOTHING mixed in): every
+    light ion there is unlabeled protein. pilot = the pilot's peptide table (MaxQuant evidence.txt).'''
+    h = pd.to_numeric(pilot[heavy], errors='coerce').fillna(0.0)
+    l = pd.to_numeric(pilot[light], errors='coerce').fillna(0.0)
+    ok = (h + l) > 0
+    if not ok.any():
+        raise ValueError('no peptide has signal in either channel -- wrong columns or wrong file')
+    per_pep = h[ok] / (h[ok] + l[ok])
+    eff = float(h[ok].sum() / (h[ok] + l[ok]).sum())    # intensity-weighted = the number to report
+    # A 1:1 forward mix of these cells does NOT read log2 H/L = 0: the unincorporated (1 - eff) of
+    # the heavy sample is counted in the LIGHT channel, so H/L = eff / (2 - eff) -- -0.20 at 93%.
+    return {'n_peptides': int(ok.sum()), 'incorporation': round(eff, 4),
+            'median_peptide_incorporation': round(float(per_pep.median()), 4),
+            'peptides_below_95pct': int((per_pep < 0.95).sum()),
+            'expected_log2_HL_bias_at_1to1': round(float(np.log2(eff / (2 - eff))), 4),
+            'pass_95pct': bool(eff >= 0.95)}
+
+def arg_to_pro_shift(peptides, seq='Sequence', ratio='Ratio H/L'):
+    '''Arg->Pro drains the heavy channel once per proline, so log2 H/L falls with PROLINE COUNT.
+    The dose slope is what makes this specific -- a flat offset is incomplete labeling instead.
+    Direct route: re-search the pilot with Pro6 variable and take I(Pro6)/(I(Pro6)+I(Pro0)).'''
+    r = np.log2(pd.to_numeric(peptides[ratio], errors='coerce'))
+    npro = peptides[seq].astype(str).str.count('P')
+    ok = np.isfinite(r)
+    r, npro = r[ok], npro[ok]
+    slope = float(np.polyfit(npro, r, 1)[0]) if npro.nunique() > 1 else float('nan')
+    return {'n_pro_free': int((npro == 0).sum()), 'n_pro_containing': int((npro > 0).sum()),
+            'median_log2_HL_pro_free': round(float(r[npro == 0].median()), 4),
+            'log2_HL_slope_per_proline': round(slope, 4),
+            'conversion_per_proline': round(float(1 - 2 ** slope), 4)}
+```
+
+### Ratios that keep on/off biology
 ```python
 import numpy as np
 
@@ -215,6 +253,38 @@ def silac_log2_ratio(heavy, light):
     presence = np.select([h & l, h, l], ['both', 'H-only', 'L-only'], default='none')    # report H-only/L-only separately
     return ratio, presence
 ```
+
+## AP-MS / Affinity-Enrichment Scoring
+
+**Goal:** Rank prey in a pulldown by enrichment over NEGATIVE-CONTROL IPs, not by abundance or by ratio to the input lysate.
+
+**Approach:** A pulldown is deliberately non-representative, so no data-internal normalization (median, sample-loading, IRS) applies, and the input lysate is not a control -- sticky background (ribosome, chaperones, tubulin, keratin) binds the beads in the pulldown and is diluted in the input, so "top N over input" returns background. The control IP is the only thing that separates a bead binder from an interactor. Require reproducible detection across bait replicates and enrichment over control, and floor absent controls at the run's detection limit so bait-only prey score finitely instead of `+Inf`.
+
+```python
+import numpy as np, pandas as pd
+
+def score_vs_control_ips(ip, bait_cols, ctrl_cols, fc_cutoff=2.0, min_bait_reps=None):
+    '''ip: prey x replicate RAW intensities or spectral counts; 0/NaN = not detected. Prey never
+    seen in any bait IP get a NaN enrichment (nothing was measured) and are never called.'''
+    L = np.log2(ip[list(bait_cols) + list(ctrl_cols)].replace(0, np.nan).astype(float))
+    if min_bait_reps is None:
+        min_bait_reps = len(bait_cols)          # default: every bait replicate, reproducibility first
+    n_bait, n_ctrl = L[bait_cols].notna().sum(axis=1), L[ctrl_cols].notna().sum(axis=1)
+    Lf = L.copy()
+    Lf[ctrl_cols] = Lf[ctrl_cols].fillna(L[ctrl_cols].min())      # per-control-run detection floor
+    enrich = Lf[bait_cols].mean(axis=1) - Lf[ctrl_cols].mean(axis=1)
+    worst = Lf[bait_cols].min(axis=1) - Lf[ctrl_cols].max(axis=1)  # weakest bait rep vs best control
+    out = pd.DataFrame({'n_bait': n_bait, 'n_ctrl': n_ctrl,
+                        'log2_enrichment': enrich, 'worst_case_log2': worst})
+    out['interactor'] = (n_bait >= min_bait_reps) & ((n_ctrl == 0) | (enrich >= fc_cutoff))
+    return out.sort_values('log2_enrichment', ascending=False)
+```
+
+This fold-change/presence score is the honest ceiling for ONE bait with a few controls. For a
+probability rather than a cutoff use SAINTexpress (spectral counts, `interaction`/`prey`/`bait`
+files -> AvgP, report BFDR <= 0.01-0.05) or CompPASS WD scores across a bait MATRIX; both need
+several independent baits, or the CRAPome as an external control set, before their statistics mean
+anything. Feed them counts or raw intensities -- never a median/SL/IRS-normalized matrix.
 
 ## Per-Method Failure Modes
 
@@ -246,7 +316,7 @@ def silac_log2_ratio(heavy, light):
 **Trigger:** Pro-containing peptides or a labeling efficiency below ~95%.
 **Mechanism:** Cells convert heavy Arg to heavy Pro (+6 Da), splitting Pro-peptide signal and underestimating the heavy channel; residual light masquerades as down-regulation.
 **Symptom:** Ratios biased toward light, worse for Pro-rich proteins; invisible without a check.
-**Fix:** Proline supplementation, measure conversion per cell line, verify >=95% incorporation on a heavy-only pilot.
+**Fix:** Proline supplementation, measure conversion per cell line, verify >=95% incorporation on a heavy-only pilot -- `silac_labeling_efficiency` and `arg_to_pro_shift` above compute both.
 
 ### SILAC on/off proteins discarded as NaN
 **Trigger:** Returning NaN whenever either channel is zero.
@@ -264,7 +334,7 @@ def silac_log2_ratio(heavy, light):
 **Trigger:** Median/sample-loading/IRS normalization applied to an affinity-purification or biotin-enrichment pulldown.
 **Mechanism:** Data-internal normalization assumes most signal is an unchanging background; a successful pulldown is deliberately non-representative (bait plus a few interactors over background), so equalizing medians or loading rescales away the enrichment being measured.
 **Symptom:** Real interactors flattened toward background; bait abundance dominates the axis of variation.
-**Fix:** Do not data-internal-normalize an enrichment; score against negative-control pulldowns (SAINT/CompPASS/CRAPome) or normalize to bait abundance.
+**Fix:** Do not data-internal-normalize an enrichment; score against negative-control pulldowns with `score_vs_control_ips` above (SAINTexpress/CompPASS/CRAPome for a probability) or normalize to bait abundance.
 
 ## Quantitative Thresholds
 
@@ -294,6 +364,9 @@ def silac_log2_ratio(heavy, light):
 | Whole plex rows become Inf/NaN after IRS | reference channel 0 or missing for that protein | mask references `<= 0`/NaN and report the unbridged proteins |
 | `eBayes`: `prior.weights contain NA values` on SILAC ratios | +/-Inf on/off codes inside the ratio matrix | NaN ratio plus a presence flag column; drop rows with no finite ratio before `lmFit` |
 | Cross-plex TMT comparison is invalid | no reference channel / no IRS | add a pooled reference channel per plex, apply SL then IRS |
+| Every unchanged protein sits below 0 in log2 H/L | incomplete heavy incorporation: the unlabeled (1 - e) fraction is counted as light | measure e on a heavy-only pilot (`silac_labeling_efficiency`); a 1:1 mix then reads log2 H/L = log2(e / (2 - e)), -0.20 at e = 0.93 |
+| Pro-rich proteins look systematically down in SILAC | Arg->Pro conversion, once per proline | `arg_to_pro_shift`: a slope in log2 H/L per proline (a flat offset is labeling, not scrambling); supplement proline |
+| AP-MS "top N by fold change over the input lysate" is all ribosome/chaperone/tubulin | the input is not a negative control; bead background is enriched in the IP and diluted in the input | score against control IPs (`score_vs_control_ips`) and require detection in every bait replicate |
 | MSnbase deprecation warnings | MSnbase is in maintenance mode | current pipelines use Spectra + QFeatures (`readQFeatures`, `aggregateFeatures`) |
 
 ## References
@@ -313,6 +386,10 @@ def silac_log2_ratio(heavy, light):
 - Sticker A, Goeminne L, Martens L, Clement L. 2020. Robust summarization and inference in proteome-wide label-free quantification. *Mol Cell Proteomics* 19(7):1209-1219.
 - Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. 2020. DIA-NN: neural networks and interference correction enable deep proteome coverage in high throughput. *Nat Methods* 17(1):41-44.
 - Pham TV, Henneman AA, Jimenez CR. 2020. iq: an R package to estimate relative protein abundances from ion quantification in DIA-MS-based proteomics. *Bioinformatics* 36(8):2611-2613.
+- Ong SE, Mann M. 2006. A practical recipe for stable isotope labeling by amino acids in cell culture (SILAC). *Nat Protoc* 1(6):2650-2660. (Incorporation check and Arg->Pro.)
+- Sowa ME, Bennett EJ, Gygi SP, Harper JW. 2009. Defining the human deubiquitinating enzyme interaction landscape. *Cell* 138(2):389-403. (CompPASS.)
+- Teo G, Liu G, Zhang J, Nesvizhskii AI, Gingras AC, Choi H. 2014. SAINTexpress: improvements and additional features in Significance Analysis of INTeractome software. *J Proteomics* 100:37-43.
+- Mellacheruvu D, Wright Z, Couzens AL, et al. 2013. The CRAPome: a contaminant repository for affinity purification mass spectrometry data. *Nat Methods* 10(8):730-736.
 - Lin MH, Wu PS, Wong TH, Lin IY, Lin J, Cox J, Yu SH. 2022. Benchmarking differential expression, imputation and quantification methods for proteomics data. *Brief Bioinform* 23(3):bbac138.
 
 ## Related Skills
