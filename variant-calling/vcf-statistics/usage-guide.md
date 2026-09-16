@@ -119,6 +119,8 @@ peddy samples ~25000 sites plus chrX to check reported sex, relationships, and a
 python -m peddy -p 4 --plot --prefix cohort_qc input.vcf.gz cohort.ped
 ```
 
+peddy's site panel and ancestry PCs are human-only and assume genome-wide coverage including chrX; it is unreliable or crashes outright on non-human organisms and on small or narrowly targeted panels.
+
 ### somalier (scalable)
 
 somalier extracts tiny per-sample sketches at informative sites, then relates them; it scales to tens of thousands of samples in seconds and cross-checks RNA-seq against WGS from the same individual.
@@ -128,6 +130,8 @@ somalier extract -d extracted/ --sites sites.vcf.gz -f ref.fa input.vcf.gz
 somalier relate --ped cohort.ped extracted/*.somalier
 somalier ancestry --labels 1kg-labels.tsv 1kg/*.somalier ++ extracted/*.somalier   # labelled ++ query
 ```
+
+The `--sites` file must be build-matched: the panels published in the [somalier releases](https://github.com/brentp/somalier/releases) are per human build (GRCh37, hg38) and will not work for another organism, a different build, or a custom target panel. For those, build a matching sites file first with `somalier find-sites <population.vcf.gz>`.
 
 ### KING kinship via vcftools
 

@@ -206,6 +206,8 @@ See examples/vcf_stats.py for a cyvcf2 script computing counts, Ti/Tv, and mean 
 | Low Ti/Tv only in novel set | False positives concentrate in novel variants | Raise stringency; recheck against dbSNP overlap |
 | `plot-vcfstats not found` / no plots | matplotlib missing or not on PATH | `pip install matplotlib`; check `which plot-vcfstats` |
 | plot-vcfstats exits 2 at the PDF step | no pdflatex or tectonic | Install a LaTeX engine for `summary.pdf`; the PNGs are already written |
+| peddy crashes (`IndexError` in `par_het`) or gives nonsense results | peddy's ~25000-site panel + chrX assume a human, genome-wide callset | Only run peddy on human genome-wide/exome VCFs; use somalier or `gtcheck` for other organisms or small/targeted panels |
+| somalier `extract`/`relate` finds 0 or too few sites | `--sites` panel is build-mismatched (bundled panels are per human build) or wrong for a custom/non-human panel | Use the sites file matching your build, or build one with `somalier find-sites <population.vcf.gz>` |
 
 ## Related Skills
 
