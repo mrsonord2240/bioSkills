@@ -112,16 +112,25 @@ cat('Proteins after per-group completeness filter:', nrow(filtered), '\n')
 # === 5. QC ===
 cat('\n=== Quality Control ===\n')
 # PCA needs a complete matrix; use the proteins observed everywhere rather than inventing values.
+# The complete-case set can be EMPTY on a larger cohort with realistic MNAR dropout, and prcomp
+# then aborts the whole script with `a dimension is zero`. Guard it and fall back to the
+# pairwise-complete sample correlation; QC is diagnostic and must not gate the statistics below.
 complete <- filtered[complete.cases(filtered), , drop = FALSE]
 cat('Proteins used for PCA (complete cases):', nrow(complete), '\n')
-pca <- prcomp(t(complete), scale. = TRUE)
-pca_df <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], Sample = rownames(pca$x), Group = sample_groups)
-var_exp <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
+if (nrow(complete) >= 3) {
+    pca <- prcomp(t(complete), scale. = TRUE)
+    pca_df <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], Sample = rownames(pca$x), Group = sample_groups)
+    var_exp <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
 
-p_pca <- ggplot(pca_df, aes(PC1, PC2, color = Group)) +
-    geom_point(size = 4) + theme_minimal() +
-    labs(x = paste0('PC1 (', var_exp[1], '%)'), y = paste0('PC2 (', var_exp[2], '%)'), title = 'PCA of Protein Abundances')
-ggsave(paste0(output_prefix, '_pca.pdf'), p_pca, width = 7, height = 6)
+    p_pca <- ggplot(pca_df, aes(PC1, PC2, color = Group)) +
+        geom_point(size = 4) + theme_minimal() +
+        labs(x = paste0('PC1 (', var_exp[1], '%)'), y = paste0('PC2 (', var_exp[2], '%)'), title = 'PCA of Protein Abundances')
+    ggsave(paste0(output_prefix, '_pca.pdf'), p_pca, width = 7, height = 6)
+} else {
+    cat('PCA skipped: only', nrow(complete), 'protein(s) observed in EVERY sample -- that is\n',
+        'missingness, not a corrupt matrix. Sample correlation (pairwise complete) instead:\n')
+    print(round(cor(as.matrix(filtered), use = 'pairwise.complete.obs', method = 'spearman'), 2))
+}
 
 # === 6. DIFFERENTIAL ANALYSIS ===
 cat('\n=== Differential Analysis ===\n')
@@ -130,6 +139,10 @@ design <- model.matrix(~ 0 + condition, data = sample_info)
 colnames(design) <- levels(sample_info$condition)
 
 fit <- lmFit(as.matrix(filtered), design)
+# This demo is deliberately TWO conditions, so the contrast is written out. For three or more
+# (dose series, time course) do NOT edit sample_groups and keep this line: it will fail with
+# `object 'Treatment' not found`. Use the Complete R Workflow block in SKILL.md, which builds the
+# contrasts from the condition levels and adjusts across them with decideTests(method='global').
 contrast <- makeContrasts(Treatment - Control, levels = design)
 # treat() folds the minimum fold-change INTO the test (a proper hypothesis against |lfc| > threshold),
 # instead of a post-hoc logFC AND adj.P double filter -- the double filter is a collider/selection
