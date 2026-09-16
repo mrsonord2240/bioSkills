@@ -64,13 +64,14 @@ Rule: never report a root from a single method without a sanity check. If a clos
 
 **Goal:** Root the tree using known sister-group taxa, preferring multiple close outgroups and verifying ingroup monophyly first.
 
-**Approach:** Confirm the outgroup taxa form a monophyletic group, root on the branch separating them from the ingroup, then check the ingroup is recovered as monophyletic -- if not, the rooting is suspect. An inferred tree is arbitrarily rooted (IQ-TREE writes `(OutA,OutB,ingroup...)`), so first root on an ingroup tip, or the monophyly test returns False for a valid outgroup; pass `outgroup_branch_length`, or Biopython makes the outgroup MRCA a trifurcating root.
+**Approach:** Confirm the outgroup taxa form a monophyletic group, root on the branch separating them from the ingroup, then check a SEPARATELY-declared, a-priori ingroup taxon list is recovered as monophyletic -- if not, the rooting is suspect. That ingroup list must be the researcher's actual focal taxa, not "every tip not currently called outgroup": `root_with_outgroup` always splits the tree into exactly two clades at the new root, so a complement-of-outgroup check is trivially monophyletic by construction and catches nothing -- it does not detect a long-branch-attracted taxon (e.g. a fast-evolving ingroup member) wrongly named as part of the outgroup. An inferred tree is arbitrarily rooted (IQ-TREE writes `(OutA,OutB,ingroup...)`), so first root on an ingroup tip, or the monophyly test returns False for a valid outgroup; pass `outgroup_branch_length`, or Biopython makes the outgroup MRCA a trifurcating root.
 
 ```python
 from Bio import Phylo
 
 tree = Phylo.read('tree.nwk', 'newick')
 outgroup = [{'name': 'OutA'}, {'name': 'OutB'}]      # multiple close outgroups beat a single long branch
+ingroup = [{'name': 'I1'}, {'name': 'I2'}, {'name': 'I3'}]   # the actual focal taxa, declared a priori -- NOT "every tip not in outgroup"
 
 tree.root_with_outgroup({'name': 'I1'})              # any INGROUP tip: makes the outgroup a clade of the temporary root
 if tree.is_monophyletic([tree.find_any(**o) for o in outgroup]):
@@ -78,6 +79,9 @@ if tree.is_monophyletic([tree.find_any(**o) for o in outgroup]):
     tree.root_with_outgroup(*outgroup, outgroup_branch_length=stem / 2)   # bifurcating root on the outgroup stem
 else:
     print('outgroup not monophyletic: root placement is unreliable, re-check taxon choice')
+
+if not tree.is_monophyletic([tree.find_any(**i) for i in ingroup]):
+    print('ingroup not monophyletic after rooting: outgroup choice is likely wrong (e.g. long-branch attraction pulled a fast ingroup taxon into the outgroup)')
 ```
 
 ## Root at the Midpoint (Clock-Limited Fallback)
