@@ -31,6 +31,7 @@ myvariant.info is one of three flagship BioThings APIs (with MyGene.info and MyC
 - Elasticsearch-backed: queries use Lucene operators (AND, OR, NOT, range like `cadd.phred:>20`)
 - Dotted-field-name syntax for nested JSON
 - The `_id` field is canonical HGVS-g per record (e.g., `chr7:g.117199644G>A`)
+- `_id` coordinates are **hg19/GRCh37**, not GRCh38. A GRCh38 HGVS-g string returns 404/notfound by `_id` even when the variant is loaded (live-confirmed 2026-09-16: `chr17:g.43106487A>C` (GRCh38) -> 404; the same BRCA1 variant is keyed `chr17:g.41258504A>C` (hg19)). For GRCh38 input, either convert to hg19 first (rsID via `clinical-databases/dbsnp-queries`, or SPDI via NCBI Variation Services / `clinical-databases/clinvar-lookup`), or search the hg38-namespaced fields directly: `clinvar.hg38.start`/`clinvar.hg38.end` or `dbnsfp.hg38.start`/`dbnsfp.hg38.end` (live-confirmed working 2026-09-16 — do not use the unprefixed `hg38.start`, which is not a valid field; see `find_high_cadd_in_region` below, where CADD has no hg38 coordinates at all and hg19 is the only option)
 
 ## Aggregated Sources: ~21 and Counting
 
@@ -294,6 +295,7 @@ def find_alphamissense_pathogenic(gene, min_score=0.564):
 | Search returns 0 hits for ClinVar or CADD terms | Non-existent field path | Use `clinvar.rcv.clinical_significance`, `clinvar.rcv.review_status`, `cadd.phred` |
 | 503 on bulk query | Rate limit | Reduce chunk to 500; sleep 1s between |
 | `_id` doesn't match input | myvariant uses canonical HGVS-g; input was rsID or non-canonical | Re-query by `_id` after first resolution |
+| GRCh38 HGVS-g by `_id` returns 404/notfound | `_id` is hg19/GRCh37; myvariant does not index GRCh38 coordinates as `_id` | Query `clinvar.hg38.start`/`dbnsfp.hg38.start` to find the hg19 `_id`, or convert via rsID/SPDI first |
 
 ## Anticipated Reviewer Pushback
 
