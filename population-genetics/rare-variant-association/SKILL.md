@@ -192,6 +192,8 @@ Thresholds are conventions; inspect the per-gene QQ plot and verify current best
 | Single MAF cutoff misses ultra-rare signal | one `--aaf-bins`/`--maxMAF` value | pass nested cutoffs (0.0001,0.001,0.01) in one run |
 | Same single-variant p reported as "gene" | testing markers, not a set | confirm a set/group file is supplied and the test is set-based |
 | Gene hit driven by one artifactual variant | ACAT/burden dominated by a miscalled site | QC inputs (INFO/R2, genotype quality) before aggregating |
+| regenie step 1 `phenotype '...' has very few unique values` | binary/case-control trait run without `--bt` (regenie defaults to QT) | add `--bt` to step 1 (it must match step 2's trait type) |
+| regenie step 1 `Uh-oh, SNP ... has low variance` | step 1's ridge null fit on the rare-variant set instead of common variants | fit step 1 on QC'd common array-type variants (MAF-filtered, LD-pruned), not the rare-variant set under test |
 
 ## References
 
