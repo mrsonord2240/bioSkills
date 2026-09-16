@@ -177,7 +177,7 @@ consensus = majority_consensus(reps, cutoff=0.5)          # clade.confidence = %
 
 Legitimate or preferred: a quick exploratory / sanity tree before a long ML run; very large n (thousands+ tips) where ML is infeasible (large-scale barcoding, OTU/pangenome trees); barcoding and population-level shallow data, where saturation is negligible and the per-site information ML keeps adds little (NJ on K2P distances is the literal DNA-barcoding standard); and as the starting tree for ML/Bayesian search.
 
-A trap, do not: publication-grade deep phylogeny or formal hypothesis testing (dating, selection, contested deep nodes) -- use ML or Bayesian with model selection; any dataset that fails a saturation test (Xia Iss >= Iss.c), which no algorithm rescues; data with strong compositional heterogeneity unless using LogDet/paralinear; and mistaking consistency for a guarantee -- NJ is consistent only with correct distances, and saturation/misspecification break it exactly as they break ML.
+A trap, do not: publication-grade deep phylogeny or formal hypothesis testing (dating, selection, contested deep nodes) -- use ML or Bayesian with model selection; any dataset that fails the saturation pre-flight above (many pairs p > 0.5 and a flat transition-vs-distance slope; optionally confirmed with Xia's Iss >= Iss.c in DAMBE), which no algorithm rescues; data with strong compositional heterogeneity unless using LogDet/paralinear; and mistaking consistency for a guarantee -- NJ is consistent only with correct distances, and saturation/misspecification break it exactly as they break ML.
 
 ## Per-Method Failure Modes
 
