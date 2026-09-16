@@ -137,6 +137,14 @@ if (length(failed) > 0) {
 }
 
 # === 3. NORMALIZE (only after the raw inspection above) ===
+# ASSUMPTION: median centering assumes most proteins are unchanged AND that the changes that do
+# occur are roughly SYMMETRIC up/down. When they are not -- an enrichment pulldown, a secretome, a
+# strong one-sided drug response -- the shift it removes is real signal, and the whole unchanged
+# proteome acquires the opposite offset. Measured on a set with 44 up vs 26 down among 296
+# proteins: every true null moved -0.19 log2 (t vs 0, p = 2e-55) and 21 of 179 true nulls were
+# called at BH 5%, all negative. Normalize on a set expected to be unchanged (spike-in standards,
+# an internal-reference protein set, or the housekeeping bulk) when the design is one-sided,
+# and always check the null centre afterwards -- see the Common Errors row.
 sample_medians <- apply(log2_int, 2, median, na.rm = TRUE)
 global_median <- median(sample_medians)
 normalized <- sweep(log2_int, 2, sample_medians - global_median)
@@ -147,7 +155,11 @@ normalized <- sweep(log2_int, 2, sample_medians - global_median)
 sample_info <- read.csv('sample_annotation.csv')
 # Re-align the annotation to the samples that SURVIVED the raw-distribution QC above; otherwise the
 # column indexing below requests a dropped sample and errors (or silently misaligns the design).
-sample_info <- sample_info[sample_info$sample %in% colnames(normalized), ]
+# match() also puts the rows in COLUMN order: lmFit pairs design rows with matrix columns
+# POSITIONALLY, so an annotation sorted differently from the intensity columns fits a wrong design
+# in silence. Never subset the annotation with `%in%` alone here.
+sample_info <- sample_info[match(colnames(normalized), sample_info$sample), ]
+stopifnot(!any(is.na(sample_info$sample)))
 sample_info$condition <- droplevels(factor(sample_info$condition))
 min_frac <- 0.6   # >= 60% present within at least one group; tune 0.5-0.7 per design
 group_complete <- sapply(levels(sample_info$condition), function(g) {
@@ -180,10 +192,24 @@ cat('Proteins after per-group completeness filter:', nrow(filtered), '\n')
 
 # === 5. QC ===
 # PCA needs a complete matrix; use the proteins observed everywhere rather than inventing values.
+# The complete-case set can be EMPTY -- 12 samples at realistic MNAR dropout is enough -- and
+# prcomp then aborts the whole workflow at step 5 of 7 with `a dimension is zero`, which says
+# nothing about missingness. Guard it, say what happened, and fall back to the pairwise-complete
+# sample correlation, which answers the same clustering question without a complete matrix.
+# QC is diagnostic: it must not gate the statistics below, and it is never a reason to impute.
 complete <- filtered[stats::complete.cases(filtered), , drop = FALSE]
 cat('Proteins used for PCA (complete cases):', nrow(complete), '\n')
-pca <- prcomp(t(complete), scale. = TRUE)
-pca_df <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], Sample = rownames(pca$x))
+pca_df <- NULL
+if (nrow(complete) >= 3) {
+    pca <- prcomp(t(complete), scale. = TRUE)
+    pca_df <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], Sample = rownames(pca$x))
+} else {
+    message('PCA skipped: only ', nrow(complete), ' protein(s) observed in EVERY sample. ',
+            'That is missingness, not a corrupt matrix -- lower min_frac, drop the sparsest ',
+            'samples, or read the correlation below. Do NOT impute to fill the matrix.')
+    sample_cor <- cor(as.matrix(filtered), use = 'pairwise.complete.obs', method = 'spearman')
+    print(round(sample_cor, 2))
+}
 
 # === 6. DIFFERENTIAL ANALYSIS (limma on the observed values) ===
 # sample_info is already loaded and factored in step 4. Batch is a COVARIATE in the same model
@@ -196,19 +222,43 @@ colnames(design) <- make.names(colnames(design))
 cat('design columns:', colnames(design), '| batch in design:', has_batch, '\n')
 
 fit <- lmFit(as.matrix(filtered), design)
-contrast <- makeContrasts(Treatment - Control, levels = design)
+# Build the contrasts FROM the factor levels. A hard-coded `makeContrasts(Treatment - Control)`
+# handles exactly one design: a three-condition dose series or a time course dies with
+# `object 'Treatment' not found` even though the design matrix built one line above is correct.
+# The reference is the FIRST level -- set it explicitly with relevel() if alphabetical order puts
+# the wrong condition first. Two conditions give the single Treatment-Control contrast as before.
+ref <- levels(sample_info$condition)[1]
+others <- setdiff(levels(sample_info$condition), ref)
+contrast <- makeContrasts(contrasts = paste(make.names(others), '-', make.names(ref)), levels = design)
+colnames(contrast) <- paste0(others, '_vs_', ref)
+cat('contrasts:', colnames(contrast), '\n')
 fit2 <- contrasts.fit(fit, contrast)
 
 # Select on FDR ALONE. A post-hoc fold-change + significance double filter inflates FDR
 # (a collider/selection effect; realized FDR can exceed 50%). To require a minimum effect,
 # use the moderated minimum-fold-change test treat()/topTreat() instead of filtering after.
 fit2_treat <- treat(fit2, lfc = log2(1.5), trend = TRUE, robust = TRUE)   # moderated min-FC test; trend+robust ~mandatory for label-free LFQ
-results <- topTreat(fit2_treat, coef = 1, number = Inf)
-results$protein <- rownames(results)
+# topTreat adjusts WITHIN one contrast. With more than one contrast the family of tests is the
+# whole set, so adjust ACROSS them: decideTests(method = 'global') applies one BH over every
+# protein x contrast cell, which is what the significance calls below use. With a single contrast
+# it is identical to the per-contrast BH, so the two-condition result is unchanged.
+results <- do.call(rbind, lapply(colnames(contrast), function(cn) {
+    tt <- topTreat(fit2_treat, coef = cn, number = Inf, sort.by = 'none')
+    data.frame(protein = rownames(tt), contrast = cn, tt, row.names = NULL)
+}))
+# unclass(): decideTests returns an S4 TestResults, which as.matrix() does NOT demote, and whose
+# `[` refuses the two-column character index used below ('Two subscripts required').
+dt <- unclass(decideTests(fit2_treat, method = 'global', adjust.method = 'BH', p.value = 0.05))
 # A protein observed in only one group (or one batch level) has no estimable contrast: limma
 # returns NA, and `adj.P.Val < 0.05` would make every downstream sum() NA. Report those separately
 # as "undetected in group B" -- that is the honest statement, not a fold change.
-results$significant <- !is.na(results$adj.P.Val) & results$adj.P.Val < 0.05
+results$significant <- !is.na(results$adj.P.Val) &
+                       dt[cbind(results$protein, results$contrast)] != 0
+# To ask instead "does this protein change ANYWHERE across the conditions" (an omnibus/ANOVA
+# question rather than a set of pairwise ones), F-test all contrast columns at once:
+#   fit2_eb <- eBayes(fit2, trend = TRUE, robust = TRUE)
+#   anova_res <- topTable(fit2_eb, number = Inf)   # F and its BH-adjusted p across all contrasts
+# Use it to screen, then report the pairwise contrasts for direction. treat() has no F-test.
 
 # === 7. OUTPUT ===
 cat('\nResults:\n')
@@ -216,6 +266,10 @@ cat('  Contrast not estimable (report as undetected-in-group):', sum(is.na(resul
 cat('  Significant proteins:', sum(results$significant), '\n')
 cat('  Up-regulated:', sum(results$significant & results$logFC > 0), '\n')
 cat('  Down-regulated:', sum(results$significant & results$logFC < 0), '\n')
+for (cn in colnames(contrast)) {                       # per-contrast breakdown (>=2 contrasts)
+    k <- results$contrast == cn & results$significant
+    cat('   ', cn, ':', sum(k), '(Up', sum(k & results$logFC > 0), 'Down', sum(k & results$logFC < 0), ')\n')
+}
 
 write.csv(results, 'proteomics_results.csv', row.names = FALSE)
 ```
@@ -240,12 +294,23 @@ msstats_input <- MaxQtoMSstatsFormat(evidence = evidence,
                                       proteinGroups = proteinGroups,
                                       annotation = annotation)
 
-# Process data
+# Process data. 'equalizeMedians' carries the SAME symmetry assumption as the median centering in
+# the limma block: most proteins unchanged, and the changes roughly balanced up and down. On the
+# 296-protein set above (44 up, 26 down) it left every true null shifted -0.19 log2 (t vs 0,
+# p = 2e-55) and MSstats then correctly called 21 of the 179 true nulls at BH 5%, all negative.
+# For a one-sided design use normalization = FALSE with an externally normalized input, or
+# normalization = 'globalStandards' with globalStandardName = <spike-in / unchanged protein set>.
+# Always check the null centre: mean log2FC over proteins you expect not to move should be ~0.
 processed <- dataProcess(msstats_input, normalization = 'equalizeMedians',
                          summaryMethod = 'TMP', censoredInt = 'NA')
 
 # Comparison. +1 on the numerator: Treatment=+1, Control=-1 so log2FC = Treatment - Control
 # (positive = up in Treatment), matching the label and the limma makeContrasts(Treatment-Control) path.
+# Columns must be ALL the Condition levels in sorted order, one ROW per contrast -- for three
+# conditions sorted Control/HighDose/LowDose that is a 2 x 3 matrix, e.g.
+#   rbind(HighDose_vs_Control = c(-1, 1, 0), LowDose_vs_Control = c(-1, 0, 1))
+# with colnames c('Control','HighDose','LowDose'); groupComparison adjusts within each row, so
+# adjust across the rows yourself (p.adjust on the pooled pvalue) when you report several.
 comparison <- matrix(c(-1, 1), nrow = 1)
 rownames(comparison) <- 'Treatment_vs_Control'
 colnames(comparison) <- c('Control', 'Treatment')
@@ -287,9 +352,23 @@ tmt_data <- quantify(raw, reporters = TMT10, method = 'max')
 coa <- as.matrix(read.csv('tmt10_coa.csv', row.names = 1, check.names = FALSE))
 stopifnot(nrow(coa) == ncol(coa), setequal(rownames(coa), reporterNames(TMT10)))
 coa <- coa[reporterNames(TMT10), reporterNames(TMT10)]   # force the quant's channel order
+# ORIENTATION CHECK. A transposed sheet has the right channel names, the right shape and produces
+# NO negative values, so the negative-count check below never sees it -- yet it makes the
+# correction 2.7x worse than the correct orientation (median relative error 0.0015 vs 0.0006 on
+# the TMT10 template), still better than doing nothing and therefore silent. Test the orientation
+# directly: a ROW is one reagent's isotopic envelope and sums to 100% by construction (minus what
+# falls off the ends of the channel list); a COLUMN sums over different reagents and has no such
+# constraint. If the columns fit 100 better than the rows, the sheet is the wrong way round.
+row_dev <- sum((rowSums(coa) - 100)^2); col_dev <- sum((colSums(coa) - 100)^2)
+if (col_dev < row_dev)
+    stop('CoA looks TRANSPOSED: column sums fit 100% better than row sums (', round(col_dev, 1),
+         ' vs ', round(row_dev, 1), '). Rows must be the SOURCE reagent, columns the OBSERVED ',
+         'channel -- transpose the sheet or re-read the lot certificate.')
+stopifnot(all(diag(coa) == apply(coa, 1, max)),   # each reagent's own channel must dominate its row
+          all(diag(coa) > 50))                    # a CoA is percentages; < 50 means fractions were read
 impurities <- coa / 100                                  # CoA percentages -> fractions
 tmt_data <- purityCorrect(tmt_data, impurities)
-stopifnot(sum(exprs(tmt_data) < 0, na.rm = TRUE) == 0)         # negatives = transposed/mis-ordered matrix
+stopifnot(sum(exprs(tmt_data) < 0, na.rm = TRUE) == 0)   # negatives = a grossly wrong matrix (NOT a transposition test; see above)
 
 # Multi-batch TMT: do NOT concatenate plexes directly. Use MSstatsTMT, which applies the
 # reference-channel (IRS) bridge during summarization:
@@ -375,6 +454,10 @@ stopifnot(!any(is.infinite(log2_matrix)))
 | `t.test`: `not enough 'x' observations` partway through a SILAC run | a protein quantified in one replicate only | filter to >= 2 finite ratios; moderated one-sample limma; report BH-adjusted p, never raw |
 | Impurity correction makes adjacent TMT10 channels worse, not better | `makeImpuritiesMatrix(filename=)` places CoA Da-offsets by POSITION, but TMT10/TMTpro interleave N and C | build the matrix by channel name (rows = source reagent) and pass it straight to `purityCorrect` |
 | A 3x-low injection sails through the raw-distribution check | the check read `LFQ intensity`, which MaxLFQ already renormalized, and used a 50%-of-median ID rule | inspect the raw `Intensity.` columns; flag a >= 1 log2 load shift or an ID count > 3 MADs below the median |
+| `prcomp`: `a dimension is zero` at the QC step, before any statistics | no protein is observed in EVERY sample, so the complete-case matrix is empty (12 samples at realistic MNAR dropout is enough) | guard `nrow(complete) >= 3`; fall back to `cor(..., use = 'pairwise.complete.obs')`, lower `min_frac`, or drop the sparsest samples -- never impute to fill the PCA matrix |
+| `makeContrasts`: `object 'Treatment' not found`, with a correct design matrix one line above | the contrast is hard-coded for two conditions; a dose series or time course has three or more | build the contrasts from `levels(sample_info$condition)` against the reference level, and adjust ACROSS them with `decideTests(method = 'global')` |
+| Every unchanged protein drifts one way; the hit list is implausibly one-directional | median centering / `equalizeMedians` on a design whose changes are NOT symmetric (pulldown, secretome, strong one-sided response) | normalize on a set expected to be unchanged (spike-ins, `globalStandards`); check that the mean log2FC over expected-null proteins is ~0 |
+| Impurity correction still leaves adjacent-channel bleed, no error, no negative values | the lot CoA was transposed -- same names, same shape, zero negatives, 2.7x worse than the right orientation | check orientation by row vs column sums to 100% before `purityCorrect`; rows are the SOURCE reagent |
 
 ## References
 
