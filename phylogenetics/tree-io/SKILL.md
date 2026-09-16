@@ -153,6 +153,7 @@ In R the equivalent is treeio `read.beast('mcc.tree')` then `get.data()` / `as_t
 | Parser errors on `[` | strict parser chokes on FigTree comment | strip comments only after extracting needed metadata |
 | `AssertionError: Two string taxonomies?` from `Phylo.read` on a MrBayes `.con.tre` | Bio.Phylo cannot parse MrBayes' annotated consensus layout | read with DendroPy (`extract_comment_metadata=True`) or treeio `read.mrbayes` |
 | NeXML tips named `d7`, `d8`... | Bio.Phylo's NeXML reader names tips by otu id, not label | check tip names; read NeXML from other tools with DendroPy |
+| NeXML written by `Phylo.write(..., 'nexml')` has no taxonomy, and drops confidence for phyloXML-sourced trees | the writer never touches `.taxonomies`, and only checks the singular `.confidence` -- phyloXML clades carry support in `.confidences` (a typed list: bootstrap, probability, ...), which stays `None` and gets skipped; a plain single-value `.confidence` (e.g. from Newick) IS written, as a `cdao:has_Support_Value` edge property | write annotated NeXML with DendroPy instead -- it serializes whatever it read (posterior, HPD, rate, taxonomy, ...) as typed `<meta>` elements, not just one hardcoded slot |
 | Non-ASCII tip garbled (`CercopithÃ¨que`) | path-based read/write used the Windows locale codec | open files with `encoding='utf-8'` for read and write |
 
 ## References
