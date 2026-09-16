@@ -118,17 +118,24 @@ MAFFT offers multiple algorithms with explicit accuracy/speed tradeoffs. Selecti
 
 ### What `--auto` Picks (and Why to Specify Explicitly)
 
-`mafft --auto` silently downgrades the algorithm based on dataset size. The decision tree is roughly:
+`mafft --auto` silently downgrades the algorithm based on dataset size **and** alignment length (column count) -- verified against the size-check block (`if [ $auto -eq 1 ]`) in the `mafft` wrapper script itself (MAFFT v7.526, `usr/bin/mafft`). Rows are evaluated top-to-bottom; the first match wins.
 
-| Sequences | `--auto` selects | Equivalent flags |
-|-----------|------------------|------------------|
-| < 200 | L-INS-i | `--localpair --maxiterate 1000` |
-| 200 - 500 | FFT-NS-i | `--retree 2 --maxiterate 2` |
-| 500 - 2000 | FFT-NS-2 | `--retree 2 --maxiterate 0` |
-| 2000 - 50000 | FFT-NS-2 (one-pass) | `--retree 1 --maxiterate 0` |
-| > 50000 | PartTree | `--parttree --retree 1 --maxiterate 0` |
+| Sequences | Columns | `--auto` selects | Equivalent flags |
+|-----------|---------|-------------------|-------------------|
+| < 100 | < 3,000 | L-INS-i | `--localpair --maxiterate 1000` |
+| < 200 | < 1,000 | L-INS-i, but capped to 2 iterations | `--localpair --maxiterate 2` |
+| < 500 | < 10,000 | FFT-NS-i | `--retree 2 --maxiterate 2` |
+| < 20,000 | any | FFT-NS-2 | `--retree 2 --maxiterate 0` |
+| < 100,000 | any | FFT-NS-2, memory-saving guide tree | `--retree 2 --maxiterate 0 --memsavetree` |
+| < 200,000 | any | FFT-NS-1, memory-saving guide tree | `--retree 1 --maxiterate 0 --memsavetree` |
+| >= 200,000 | < 3,000 | PartTree, local-alignment distance | `--dpparttree` |
+| >= 200,000 | >= 3,000 | PartTree, k-mer distance | `--parttree` |
 
-The transition at 200 sequences flips the alignment from "iterative-refined accurate" to "single-pass progressive". Note that `--auto` invokes FFT-NS-i with only `--maxiterate 2` in the 200-500 range (a truncated form of the full FFT-NS-i which uses `--maxiterate 1000`); for best accuracy in this range, specify `--retree 2 --maxiterate 1000` explicitly. For publication-quality phylogenetics, specify the algorithm explicitly so reproducibility audits do not rely on internal threshold heuristics.
+Both sequence count AND column count gate the first three rows -- e.g. 150 sequences of a 1.5 kb gene (150 seqs x ~1,500 columns) fail the `< 100`/`< 3,000` row (too many sequences) and the `< 200`/`< 1,000` row (too many columns), so `--auto` falls through to FFT-NS-i, not L-INS-i, despite being under the old "< 200" threshold. Verified empirically on this machine (MAFFT v7.526): 90 seqs x 200bp -> L-INS-i; 150 seqs x 200bp -> L-INS-i, 2 iterations; 150 seqs x 1,500bp and 120 seqs x 1,100bp -> FFT-NS-i, 2 iterations; 600 seqs x 200bp -> FFT-NS-2. The 100,000 / 200,000 / PartTree rows were confirmed by reading the script only -- running them here wasn't practical.
+
+Separately, the wrapper caps `--maxiterate` at 16 by default no matter what value is requested (`iteratelimit=16` under the default `BAATARI2` parallelization strategy, `usr/bin/mafft` ~line 1512) -- confirmed by running `mafft --localpair --maxiterate 1000` explicitly and seeing "Iterative refinement method (<16)" in the reported strategy, identical to `--auto`'s output for the same input. So hand-specifying `--maxiterate 1000` does not actually raise the iteration count above 16 unless a `--bestfirst`/`--baatari0` parallelization strategy is also set (raises the cap to 254).
+
+For publication-quality phylogenetics, specify the algorithm explicitly so reproducibility audits do not rely on internal threshold heuristics.
 
 ### Basic Usage
 
