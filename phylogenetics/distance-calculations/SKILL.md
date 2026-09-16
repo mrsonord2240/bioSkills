@@ -81,10 +81,20 @@ Loud flag, the second flat rule: Bio.Phylo and scikit-bio do NOT correct for mul
 **Approach:** In Python use Bio.Phylo for the NJ/UPGMA algorithm and pure-Python I/O, but treat its distance as an uncorrected p-distance; for any divergent data move the distance step to ape `dist.dna`, then cluster with FastME (best) or NJ.
 
 ```python
+import numpy as np
 from Bio import AlignIO
+from Bio.Align import MultipleSeqAlignment
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
 from Bio.Phylo.TreeConstruction import DistanceCalculator, DistanceTreeConstructor
 
 aln = AlignIO.read('alignment.fasta', 'fasta')
+# 'identity' treats a gap-vs-base pair as a mismatch over the FULL alignment length (see Tool
+# Taxonomy); strip any column with a gap first, or the distance is biased toward gappy taxa:
+arr = np.array([list(rec.seq) for rec in aln])
+keep = (arr != '-').all(axis=0)                                   # one-line gap-column filter
+aln = MultipleSeqAlignment([SeqRecord(Seq(''.join(row[keep])), id=rec.id) for row, rec in zip(arr, aln)])
+
 calc = DistanceCalculator('identity')        # identity-only: this is a p-distance, NOT a JC/K80 correction
 dm = calc.get_distance(aln)                   # multiple/back/parallel hits are NOT corrected here
 tree = DistanceTreeConstructor().nj(dm)       # NJ algorithm is correct; the DISTANCES are the limitation
@@ -101,8 +111,16 @@ tree_k80 = DistanceTreeConstructor().nj(DistanceMatrix(names, lower))
 
 ```r
 library(ape)
+library(phangorn)
 aln <- read.dna('alignment.fasta', format = 'fasta')
-alpha <- 0.5                                        # gamma shape (alpha < 1 = strong ASRV); estimate it, do not assume
+
+# Estimate alpha by ML (phangorn) instead of assuming a value -- fit a starting tree, then let
+# optim.pml optimize only the gamma shape (checked on phangorn: optim.pml, package ape 5.8.1):
+aln_phy <- phyDat(aln, type = 'DNA')
+fit0 <- pml(nj(dist.dna(aln, model = 'JC69')), aln_phy, k = 4)
+fit1 <- optim.pml(fit0, optGamma = TRUE, model = 'GTR', rearrangement = 'none')
+alpha <- fit1$shape                                 # small alpha (< ~1) = strong ASRV; near/above ~50 = ~uniform rates
+
 method <- function(x) fastme.bal(dist.dna(x, model = 'TN93', gamma = alpha), nni = TRUE, spr = TRUE)
 tree <- method(aln)                                 # define the method ONCE so the bootstrap reuses it exactly
 # nj() / bionj() are the faster single-pass alternatives; bionj seeds ML searches
