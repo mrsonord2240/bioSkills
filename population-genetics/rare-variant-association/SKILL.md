@@ -101,12 +101,18 @@ Run `regenie --step 2 ... --check-burden-files --ignore-pred` first to catch var
 # and lof+missense+synonymous (step2_SPAtests.R --help, SAIGE 1.3.1). --maxMAF_in_groupTest passes
 # several MAF cutoffs in ONE run - this multi-cutoff combination is what GENE+ adds over SAIGE-GENE.
 # bgen input also needs --bgenFileIndex and --sampleFile (or use --bedFile/--bimFile/--famFile).
+# --LOCO defaults to TRUE, and gene/region-based tests then require --chrom - without it the tool
+# stops with "chrom needs to be specified in order to apply Leave-one-chromosome-out on gene- or
+# region-based tests" (step2_SPAtests.R --help; SAIGE-doc set_step2 example, SAIGE 1.3.1). Run once
+# per chromosome, each pass pointing at that chromosome's own LOCO null from step 1; only pass
+# --LOCO=FALSE instead if step 1 was NOT fit with LOCO (it loses LOCO's proximal-contamination
+# control, so prefer per-chromosome --chrom whenever step 1 has per-chromosome nulls).
 step2_SPAtests.R --bgenFile geno_wes.bgen --bgenFileIndex geno_wes.bgen.bgi --sampleFile samples.txt \
-    --groupFile groups.txt \
+    --groupFile groups.txt --chrom 1 \
     --GMMATmodelFile null.rda --varianceRatioFile null.varianceRatio.txt \
     --annotation_in_groupTest "lof,missense;lof,missense;lof;synonymous" \
     --maxMAF_in_groupTest 0.0001,0.001,0.01 --is_output_moreDetails TRUE \
-    --SAIGEOutputFile gene_tests.txt
+    --SAIGEOutputFile gene_tests_chr1.txt
 ```
 
 The `groups.txt` file gives, per gene, a line of variant IDs and a matching line of their annotations (and optionally a weight line); the annotation labels there must match `--annotation_in_groupTest`.
