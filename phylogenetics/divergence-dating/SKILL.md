@@ -73,7 +73,13 @@ Soft bounds (Yang and Rannala 2006) make a bound a quantile, not a wall: a small
 | TreePL / r8s | Smith and O'Meara 2012; Sanderson 2002 | penalized-likelihood point estimate; roughness penalty `lambda` set by cross-validation | very large trees (1000s-10000s taxa); accept point estimates + bootstrap CIs |
 | LSD2 / treedater | To et al. 2016 | least-squares dating; native tip-dating, very fast | huge tip-dated viral trees; fast rooting and sanity check before a Bayesian run |
 
-MCMCTree's approximate likelihood does the expensive Felsenstein pruning once (computing branch-length MLEs, gradient, and Hessian per partition) rather than every MCMC step, which is what makes thousands of loci tractable; check that BASEML converged because unreliable per-partition branch lengths (saturated/short loci) corrupt the approximation. The infinite-sites plot (dos Reis and Yang 2011) plots posterior CI width against posterior mean age across nodes: under infinite data the relationship becomes linear through the origin, with the residual width set entirely by calibration uncertainty -- if real-data points already hug that line, more sequence data will NOT narrow the dates and the answer is better fossils, not more sites. TreePL and r8s return one number per node and produce NO uncertainty; a bare PL date is a failure mode, not a result -- bootstrap for CIs and cross-validate `lambda`.
+MCMCTree's approximate likelihood does the expensive Felsenstein pruning once (computing branch-length MLEs, gradient, and Hessian per partition) rather than every MCMC step, which is what makes thousands of loci tractable; check that BASEML converged because unreliable per-partition branch lengths (saturated/short loci) corrupt the approximation. The infinite-sites plot (dos Reis and Yang 2011) plots posterior CI width against posterior mean age across nodes: under infinite data the relationship becomes linear through the origin, with the residual width set entirely by calibration uncertainty -- if real-data points already hug that line, more sequence data will NOT narrow the dates and the answer is better fossils, not more sites. `examples/infinite_sites_plot.py` parses `out.txt`'s posterior-mean/HPD table and fits that through-origin line, reporting the slope and R^2 for one run and, given out.txt from a second run with more loci, whether the slope has stabilized:
+
+```
+python examples/infinite_sites_plot.py 1locus/post/out.txt 2loci/post/out.txt
+```
+
+TreePL and r8s return one number per node and produce NO uncertainty; a bare PL date is a failure mode, not a result -- bootstrap for CIs and cross-validate `lambda`.
 
 ## Temporal Signal Before Tip-Dating
 
@@ -199,7 +205,7 @@ A positive slope is necessary, not sufficient: a dataset sampled over a few mont
 | Root-to-tip R^2 (examples/root_to_tip.py or TempEst GUI) | exploratory; near-zero / << ~0.2 = weak signal; positive slope mandatory | Rambaut et al. 2016 (tips non-independent, not a formal test) |
 | Date-randomization test | real-data rate estimate outside the randomized distribution (no CI overlap) | Duchene et al. 2015 |
 | Coefficient of variation of branch rates | abutting 0 -> strict adequate; clearly > 0 (0 excluded) -> relaxed needed | Drummond et al. 2006 |
-| Infinite-sites plot | points on the linear CI-width-vs-age line -> more sites will not help | dos Reis and Yang 2011 |
+| Infinite-sites plot (examples/infinite_sites_plot.py) | points on the linear CI-width-vs-age line -> more sites will not help | dos Reis and Yang 2011 |
 | MCMCTree acceptance proportion | ~20-40% (target ~30%); tune `finetune` if outside | PAML practice |
 | Smoothing `lambda` (TreePL/r8s) | set by cross-validation, never default | Sanderson 2002; Smith and O'Meara 2012 |
 
