@@ -176,6 +176,9 @@ gatk FilterMutectCalls -R reference.fa -V mutect2_raw.vcf \
 # Mutect2 often lists the normal first, so [0] would test the normal.
 TUMOR=$(bcftools view -h mutect2_filtered.vcf | grep '^##tumor_sample=' | cut -d= -f2)
 T=$(( $(bcftools query -l mutect2_filtered.vcf | grep -nxF "$TUMOR" | cut -d: -f1) - 1 ))
+# No ##tumor_sample header (e.g. stripped by a merge step) leaves TUMOR empty and T=-1;
+# without this guard bcftools filter segfaults (exit 139) instead of stopping with a message.
+[ -n "$TUMOR" ] && [ "$T" -ge 0 ] || { echo 'tumor sample not found; pass it explicitly'; exit 1; }
 bcftools filter -i "INFO/TLOD>6.3 && FMT/AF[$T:0]>0.05 && FMT/DP[$T]>20" \
     mutect2_filtered.vcf -o somatic_final.vcf
 ```
