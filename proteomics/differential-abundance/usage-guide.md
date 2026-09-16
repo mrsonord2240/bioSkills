@@ -8,7 +8,7 @@ Identify proteins with significantly different abundance between experimental co
 pip install numpy pandas scipy statsmodels
 ```
 ```r
-BiocManager::install(c("limma", "DEqMS", "proDA", "msqrob2", "MSstats", "ashr"))
+BiocManager::install(c("limma", "DEqMS", "proDA", "msqrob2", "QFeatures", "MSstats", "ashr"))
 ```
 
 ## Quick Start
@@ -18,6 +18,7 @@ Tell your AI agent what you want to do:
 - "Use DEqMS because I have PSM counts per protein from a TMT experiment"
 - "My label-free data has 30% missing values and some on/off proteins -- test it without imputing"
 - "Test for at least a 1.5-fold change instead of just nonzero, without inflating FDR"
+- "Test at the peptide level from my evidence.txt with msqrob2 instead of a protein matrix" (`examples/msqrob2_peptide_level.R`)
 
 ## Example Prompts
 
@@ -56,7 +57,7 @@ Tell your AI agent what you want to do:
 | limma | Small n (3-5), protein-level summaries | Borrows variance across proteins via empirical Bayes |
 | DEqMS | PSM/peptide counts available | Prior keyed on quantification depth; dominates limma-trend |
 | proDA | Label-free with extensive MNAR missing values | Models dropout in the likelihood; no imputation |
-| msqrob2 | Outlier-peptide / unbalanced coverage | Peptide-level robust ridge; keeps feature df |
+| msqrob2 | A peptide table exists; outlier-peptide / unbalanced coverage | `QFeatures` + robust regression with EB moderation; keeps feature df. On clean, balanced data it matched limma call-for-call, so escalate for peptide disagreement, not by default. `ridge = TRUE` needs more than two mean-model parameters |
 | MSstats | Technical replicates, nested/labeled designs | Feature-level mixed models |
 | Welch t-test + BH | Large n (>10), Python-only | Simple; no moderation, unsuitable at small n |
 
@@ -83,6 +84,8 @@ The dominant statistical problem is missingness, and in label-free MS it is left
 - Include batch as a covariate in the design; use `removeBatchEffect()` only for PCA/visualization, never as input to `lmFit`.
 - For DEqMS use PSM count for TMT and peptide count for label-free, and the minimum count across batches for multi-batch TMT.
 - Check volcano symmetry: rigid near-vertical streaks of pinned points signal imputation artifacts, not biology.
+- After ANY feature-level test (msqrob2, MSstats), check that the median log2FC over all tested proteins is ~0 before reading the table. Per-run median normalization on the peptide table takes each run's median over a different set of detected peptides, which offsets the whole contrast; feature-level SEs are small enough to call that offset significant proteome-wide. Fix it upstream in proteomics/quantification, not by re-centring the p-values.
+- msqrob2 and MSstats both hide their unusable proteins: msqrob2 returns `adjPval = NA`, MSstats returns an infinite `log2FC` with `issue == 'oneConditionMissing'`. Report both as undetected lists, never as fold changes.
 
 ## Related Skills
 
