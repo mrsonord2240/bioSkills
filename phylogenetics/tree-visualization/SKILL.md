@@ -124,10 +124,21 @@ fig.savefig('supported_tree.svg', bbox_inches='tight')
 plt.close(fig)
 ```
 
-Color branches by group (set `.color` on the MRCA clade; descendants inherit it):
+Color branches by group (set `.color` on the MRCA clade; descendants inherit it). ROOT FIRST: `common_ancestor` on an arbitrarily-rooted Newick read (the common case -- IQ-TREE etc. write an unrooted trifurcation) can return a basal node spanning nearly the whole tree instead of the intended clade, so root on an outgroup (tree-manipulation) before calling it, and check the returned tip set:
 
 ```python
-tree.common_ancestor({'name': 'Homo_sapiens'}, {'name': 'Pongo_abelii'}).color = 'red'   # works on a Newick-read tree
+import re
+
+tree.root_with_outgroup({'name': 'OutA'}, {'name': 'OutB'})   # root BEFORE any common_ancestor call -- see tree-manipulation
+
+mrca = tree.common_ancestor({'name': 'Homo_sapiens'}, {'name': 'Pongo_abelii'})
+mrca_tips = sorted(t.name for t in mrca.get_terminals())
+print('MRCA tips:', mrca_tips)                 # check this against the clade you meant BEFORE trusting the color
+mrca.color = 'red'
+
+for clade in tree.get_nonterminals():          # clear raw support strings so they are not drawn as node labels
+    if clade.name and re.fullmatch(r'[\d.]+/[\d.]+', clade.name):
+        clade.name = None
 
 fig, ax = plt.subplots(figsize=(10, 8))
 Phylo.draw(tree, axes=ax, do_show=False)       # as_phyloxml() is needed only to EXPORT colors to phyloXML
@@ -218,6 +229,7 @@ Lock the branch-length scale; do not let the figure engine non-uniformly stretch
 | BEAST HPD bars absent from a Python figure | drew an annotated tree with Bio.Phylo | route through treeio `read.beast` + ggtree `geom_range` |
 | Figure not saving / blank | `do_show=True` opens a window instead of writing | pass `do_show=False`, then `fig.savefig(...)` |
 | Branch colors not appearing | color set on a tip or the wrong clade | set `clade.color` on the MRCA clade (inherits to descendants); `as_phyloxml()` is only needed for phyloXML export |
+| Color covers far more of the tree than the intended clade | `common_ancestor` called before rooting, so the MRCA of two intended-clade tips is the basal node of an arbitrarily-rooted read | root on an outgroup (tree-manipulation) first, then print and check `mrca.get_terminals()` before coloring |
 | Support labels missing on an IQ-TREE tree | `SH-aLRT/UFBoot` label kept in `clade.name`, `confidence` None | parse `clade.name` as in the support recipe; warn when no clade has support |
 | HPD bars shifted off the annotated interval | ggtree `geom_range` default `center = 'auto'` | `geom_range('height_0.95_HPD', center = 'height')` |
 | Labels overlap into a black band | too many tips for rectangular layout | increase panel height, rotate labels, or switch to circular/iTOL |
