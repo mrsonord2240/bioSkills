@@ -96,6 +96,18 @@ SH-aLRT (Guindon 2010) does not resample data; for each branch it tests whether 
 
 For large rogue-taxon-prone trees, the binary Felsenstein bootstrap lets a single wandering tip crush an otherwise-recovered deep branch; transfer bootstrap (TBE, Lemoine 2018, RAxML-NG `--bs-metric tbe`) replaces the in/out indicator with a gradual transfer distance and rescues those branches, at the cost of being more permissive.
 
+## Pre-flight: Small or Low-Signal Alignments
+
+**Goal:** Decide whether an alignment carries enough signal to trust the tree, and whether apparent structure is really a duplicate sequence, before interpreting support. This is the opposite failure mode from the rest of this Skill -- few taxa, short or conserved alignments, not phylogenomic scale.
+
+**Approach:** IQ-TREE2 already reports every diagnostic below in its own `.iqtree`/`.log` output -- do not compute them separately.
+
+- **Parsimony-informative sites.** The `.iqtree` report's SEQUENCE ALIGNMENT block prints `Number of parsimony informative sites: N`. Few informative sites (short or conserved data, few taxa) means little of the alignment actually drove the topology; check this count before trusting a deep or well-supported-looking node. Example, 6 short primate isolates / 250 sites: `Number of constant sites: 187 (= 74.8% of all sites)` / `Number of parsimony informative sites: 33`.
+- **Identical sequences are KEPT, not dropped.** IQ-TREE2 does not collapse or remove identical sequences by default; it flags the pair in the log and keeps both in the tree: `NOTE: <seq> is identical to <seq> but kept for subsequent analysis`. The duplicate then sits on its own near-zero branch next to its twin (see next point) -- do not mistake the pair for two independently resolved tips.
+- **Collapse or flag branches <=1e-6 before reading support.** IQ-TREE2's branch-length floor is 1e-6 (printed as e.g. `0.0000010000`); a branch at or near that floor means the two sides are effectively identical (a duplicate or near-duplicate), not a resolved split. Support on the node immediately adjacent to a near-zero branch is answering "is this near-duplicate reliably near-duplicate," not "is this clade real" -- collapse such branches first (e.g. `ape::di2multi(tree, tol=1e-6)` in R) before reading support on the adjacent node.
+
+Verified on a 6-taxon alignment with one exact duplicate (`Homo_sapiens` / `Homo_sapiens_isolate2`, `iqtree2 -s isolates6.fa -m MFP -B 1000 -bnni --alrt 1000 -T 1`): `.iqtree` reports `Number of parsimony informative sites: 33` (of 250); `.log` prints `NOTE: Homo_sapiens_isolate2 is identical to Homo_sapiens but kept for subsequent analysis`; the treefile resolves both duplicate tips at `0.0000010000` (IQ-TREE's 1e-6 floor), and the branch grouping that pair with the rest of the tree carries an 86.7/100 SH-aLRT/UFBoot split driven entirely by the duplicate, not by independent phylogenetic signal.
+
 ## Concordance Factors
 
 Bootstrap quantifies statistical confidence given the concatenated data; concordance factors (Minh 2020) quantify how much of the actual data carries a branch.
