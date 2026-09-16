@@ -15,7 +15,7 @@ Before using code patterns, verify installed versions match. If versions differ:
 
 If code throws an unrecognized-argument or model-parse error, introspect the installed tool and adapt the example to match the actual API rather than retrying.
 
-IQ-TREE2 uses single-dash documented forms (`-alrt`, `-bnni`, `-B`); `-B`/`-T` are v2.x (v1.x used `-bb`/`-nt`). Do NOT write `--alrt`. The likelihood site-concordance flag `--scfl` requires IQ-TREE 2.2.2+ (older builds have only the parsimony `--scf`).
+IQ-TREE2's `--help` documents `--alrt NUM` and `--bnni` (double-dash) and `-B, --ufboot NUM` / `-T NUM|AUTO` (bootstrap replicates / threads, either dash form). In practice IQ-TREE2 2.4.0 accepts both single- and double-dash forms of these flags (`-alrt`/`--alrt`, `-bnni`/`--bnni` all run), and the legacy v1.x short flags `-bb`/`-nt` still work as aliases for `-B`/`-T`. `-B`/`-T` are the current preferred v2 names -- use those in new commands. The likelihood site-concordance flag `--scfl` requires IQ-TREE 2.2.2+ (older builds have only the parsimony `--scf`).
 
 # Modern ML Tree Inference -- ML Support Measures Repeatability, Not Correctness
 
@@ -174,8 +174,6 @@ When splitting an alignment into partitions, the branch-length linkage choice is
 
 | Error / symptom | Cause | Solution |
 |-----------------|-------|----------|
-| `Unknown argument --alrt` | wrote the GNU double-dash form | IQ-TREE2 uses single-dash `-alrt`, `-bnni`, `-B` |
-| `-bb` / `-nt` not recognized | v1.x flags on a v2.x binary | use `-B` (bootstrap) and `-T` (threads) in 2.x |
 | Reading UFBoot 80 as "supported" | applied the bootstrap-70 rule to a different scale | use UFBoot >=95 AND SH-aLRT >=80 |
 | Fully-supported deep node distrusted by reviewer | no concordance factors reported | compute gCF/sCFL; treat high-support/low-CF as unresolved |
 | `--scfl` unrecognized | IQ-TREE older than 2.2.2 | upgrade, or fall back to parsimony `--scf` |
