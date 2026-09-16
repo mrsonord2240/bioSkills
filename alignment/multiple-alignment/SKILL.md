@@ -70,6 +70,8 @@ Some workloads exceed what the four main tools handle gracefully. Use the scale-
 
 **vcMSA limitation:** Pre-filter input to within ~2x mean length; vcMSA degrades sharply on mixed full-length/fragment input because ProtT5 embeddings encode positional context. For mixed-length sets, segment long sequences via HHsearch domain decomposition before alignment, or use Foldmason on predicted structures.
 
+**`--adjustdirection` renames reversed sequences.** MAFFT silently prepends `_R_` to the header of every sequence it reverse-complements (verified on MAFFT 7.526: `mafft --adjustdirection --globalpair small.fa` turned `>revcomp_seq` into `>_R_revcomp_seq`, leaving already-forward sequences untouched). Strip the `_R_` prefix from sequence IDs before any downstream join or merge keyed on sequence name (tree tip labels, metadata tables, `pal2nal` pairing) -- an unstripped prefix silently breaks the key match instead of erroring.
+
 ## Critical Concepts
 
 ### Mitigate Guide-Tree Dependency
@@ -431,15 +433,41 @@ Mask columns below the reliability threshold before phylogenetic inference. Tree
 Before proceeding to downstream analysis, verify alignment quality:
 
 1. **Visual inspection**: Scan for columns of mostly gaps with scattered residues (hallmark of misalignment)
-2. **Gap distribution**: High gap fraction (>50% of columns with gaps) suggests problematic regions or inclusion of non-homologous sequences
+2. **Gap distribution**: A high gap fraction (>50% of columns with gaps) is a prompt to inspect further, not a verdict on its own -- a correct indel-rich alignment (true divergent-family history) can clear this threshold too (audited case: 55.7% gapped columns on a genuinely correct alignment, SP 0.966 vs truth). Read it alongside the homology/orientation screen below, not instead of it.
 3. **Sequence identity**: If average pairwise identity is <25% for proteins, alignment reliability is questionable
-4. **Outlier sequences**: Sequences with excessive gaps relative to others may be non-homologous or fragments; consider removing and re-aligning
+4. **Outlier sequences**: Sequences with excessive gaps relative to others are a lead to check, not a homology verdict -- a contaminant's gap fraction can sit inside the range of the real homologs (audited case: a non-homologous contig at 0.18 next to homologs at 0.12-0.16, indistinguishable by gap fraction alone) while scoring far below them on a direct homology/orientation screen. Run the screen in "When NOT to Run MSA" below rather than deciding from gap counts alone.
 5. **Conservation pattern**: Functional domains should show clear conservation; absence of expected conserved motifs suggests alignment error or non-homology
 6. **Run GUIDANCE2 or MUSCLE5 ensemble**: Quantify alignment confidence per column before phylogenetic inference
 
 ## When NOT to Run MSA
 
-- **Non-homologous sequences**: MSA tools always produce an alignment, even for unrelated sequences; verify homology first (e.g., BLAST E-value < 1e-5)
+- **Non-homologous sequences**: MSA tools always produce an alignment, even for unrelated sequences; verify homology first (e.g., BLAST E-value < 1e-5). If BLAST+ is not installed, use a local score-vs-shuffled screen instead -- it also flags orientation ahead of `--adjustdirection`:
+
+```python
+# Homology/orientation pre-flight, no BLAST+ required (Biopython PairwiseAligner).
+# A real homolog scores far above the null distribution from shuffled copies of
+# itself; a contaminant or unrelated sequence does not. Run before MSA, not after --
+# gap fraction alone (checklist items 2 and 4 above) can miss a contaminant whose
+# gap fraction lands inside the range of the real homologs.
+import random
+from Bio import SeqIO
+from Bio.Align import PairwiseAligner
+
+recs = list(SeqIO.parse('sequences.fa', 'fasta'))
+al = PairwiseAligner(mode='local', match_score=2, mismatch_score=-3,
+                      open_gap_score=-5, extend_gap_score=-2)
+rng = random.Random(1)
+ref = recs[0]                                    # or a known-good reference
+for r in recs[1:]:
+    fwd, rev = al.score(ref.seq, r.seq), al.score(ref.seq, r.seq.reverse_complement())
+    shuffled_max = max(al.score(ref.seq, ''.join(rng.sample(str(r.seq), len(r.seq))))
+                        for _ in range(5))
+    call = 'NON-HOMOLOGOUS?' if max(fwd, rev) < 2 * shuffled_max else \
+           ('reverse strand' if rev > fwd else 'forward')
+    print(f'{r.id}: fwd={fwd:.0f} rev={rev:.0f} shuffled_max={shuffled_max:.0f} -> {call}')
+```
+
+  Checked on MAFFT 7.526 / BioPython 1.88 against a 13-sequence set with one planted contaminant and three reverse-strand sequences: flagged only the contaminant as `NON-HOMOLOGOUS?` (score 21, vs. shuffled-null ceiling 25) and correctly called the three reverse-strand sequences without flagging them, while their gap fractions (0.12-0.16) were indistinguishable from the contaminant's (0.18). Drop anything flagged `NON-HOMOLOGOUS?` before alignment; re-run `--adjustdirection` only on what remains, then strip `_R_` per the note above.
 - **Sequences below the twilight zone**: Below ~20% protein identity, sequence signal is lost in noise; structural alignment is needed
 - **Different domain architectures**: Globally aligning multi-domain proteins with different domain orders produces meaningless results; align individual domains separately
 - **Very different lengths without shared homology**: Aligning a 50-residue fragment against 1000-residue proteins globally forces biologically meaningless gaps; use local alignment or fragment-aware modes (E-INS-i)
