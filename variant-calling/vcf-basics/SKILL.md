@@ -330,7 +330,7 @@ vcf.close()
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `no BGZF EOF marker` | Not bgzipped (plain gzip) | Recompress with `bgzip`, not `gzip` |
+| `not compressed with bgzip` / `not BGZF compressed, cannot index` (older htslib: `no BGZF EOF marker`) | Not bgzipped (plain gzip) | Recompress with `bgzip`, not `gzip` |
 | `index required` / region query fails | Missing index | Run `bcftools index` (`-t` for tabix) |
 | `sample not found` | Wrong sample name | Check with `bcftools query -l` |
 | INFO/FORMAT field missing or mistyped | Header out of sync with body | Fix `##INFO`/`##FORMAT` Number/Type; use `bcftools +fill-tags` |
