@@ -174,7 +174,8 @@ Key strata and their failure modes: homopolymer runs (systematic indel errors, I
 bcftools view -H input.vcf.gz | wc -l              # total records
 bcftools view -v snps   -H input.vcf.gz | wc -l    # SNPs
 bcftools view -v indels -H input.vcf.gz | wc -l    # indels
-bcftools view -f PASS   -H input.vcf.gz | wc -l    # PASS variants
+bcftools view -f PASS   -H input.vcf.gz | wc -l    # strict PASS (excludes FILTER='.' unfiltered records)
+bcftools view -f .,PASS -H input.vcf.gz | wc -l    # not-failed (FILTER='.' or PASS) -- use this on an unfiltered callset
 bcftools query -f '%QUAL\n' input.vcf.gz | awk '{s+=$1;n++} END{print "mean QUAL:", s/n}'
 ```
 
