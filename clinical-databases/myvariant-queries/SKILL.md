@@ -117,6 +117,8 @@ For reproducibility, record per-source versions in analysis output alongside res
 
 **Approach:** Batch `getvariants` with explicit field list; record `/v1/metadata` versions; convert to DataFrame.
 
+**Data governance:** batch-annotating variant lists derived from patients or research participants sends them to myvariant.info, a public API. Confirm consent and IRB/data-use approvals cover this before batch-querying; route PHI-sensitive work to OpenCRAVAT or another local tool instead (see Comparison to Alternatives) when those approvals aren't in place.
+
 ```python
 import myvariant
 import pandas as pd
