@@ -123,6 +123,8 @@ for term in list(tree.get_terminals()):
 # ete3 (Py): tree.prune(list(keep), preserve_branch_length=True)   # the flag is mandatory, else distances shrink
 ```
 
+`examples/pairwise_tree_distances.py` computes `tree.distance()` between every tip pair -- use it before and after pruning to verify a known patristic distance held.
+
 Non-monophyletic targets cannot be "extracted as a clade" -- there is no node whose descendants are exactly those taxa. Prune to the taxon set to get the induced subtree instead; `common_ancestor` of non-monophyletic taxa returns an MRCA whose clade contains EXTRA taxa.
 
 ## Collapse Low-Support Branches Into SOFT Polytomies
