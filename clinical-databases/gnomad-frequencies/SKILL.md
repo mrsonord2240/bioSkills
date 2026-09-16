@@ -343,6 +343,7 @@ def filter_rare_variants_hail(input_vcf, max_grpmax_faf95=0.0001, output_path='f
 - Mechanism: The API answers `{"errors": [{"message": "Variant not found"}], "data": {"variant": null}}`; reading only `data` turns a build mismatch into "absent".
 - Symptom: A common variant is reported absent from gnomAD.
 - Fix: Check the build first; surface the GraphQL `errors` array; query `gnomad_r2_1` for GRCh37 or lift over to GRCh38 (rs334 = 11-5227002-T-A).
+- Residual case: `query_variant`'s `build` check only catches a caller who contradicts themselves (`build='GRCh37'` with `dataset='gnomad_r4'`); it cannot catch coordinates that are simply wrong for a `build` the caller states correctly. rs334's GRCh37 coordinates (11-5248232-T-A) queried against `gnomad_r4` with `build='GRCh38'` still return the identical `Variant not found` (confirmed live 2026-09-16) -- the API cannot tell a wrong-build id from a truly absent one. Before trusting a batch of "absent" results, spot-check one known common variant (rs334 -> GRCh38 11-5227002-T-A, genome AF ~1.3%) or confirm the reference allele via NCBI Variation Services `/v0/spdi/{seq_id}:{pos-1}:{ref}:{alt}/canonical_representative` (SPDI positions are 0-based; a `Disambiguation exception` warning there means the asserted reference doesn't match the named assembly -- a build-mismatch signal) or `/v0/refsnp/{rsid}`.
 
 **4. Comparing LOEUF absolute values across v2/v4**
 - Trigger: "v4 LOEUF for GENE-X is 0.45; v2 was 0.30; has it become more tolerant?"
