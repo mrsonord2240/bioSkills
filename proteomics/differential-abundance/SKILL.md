@@ -18,7 +18,7 @@ package and adapt the example to match the actual API rather than retrying.
 
 # Differential Protein Abundance -- Moderated Testing on a Log-Intensity Matrix with Honest Missingness
 
-**"Find differentially abundant proteins between my conditions"** -> Moderated statistical testing on a normalized log-intensity matrix, carrying missingness in the likelihood instead of filling it in -- because the missing values are low BECAUSE the protein is low, and imputing them manufactures false positives.
+**"Find differentially abundant proteins between my conditions"** -> Moderated statistical testing on a normalized log-intensity matrix, carrying missingness in the likelihood instead of filling it in -- because the missing values are low BECAUSE the protein is low, and imputing them replaces a detection limit with numbers whose fold change is set by the imputation constant and whose p-value carries no FDR guarantee.
 - R: `limma::eBayes(fit, trend=TRUE, robust=TRUE)` for empirical-Bayes moderated t-tests (the protein-level workhorse)
 - R: `DEqMS::spectraCounteBayes()` when PSM/peptide counts are available (preferred over limma-trend when quant depth varies)
 - R: `proDA::test_diff()` / `msqrob2` / `MSstats` when missing values are extensive (model the dropout, no imputation)
@@ -52,7 +52,7 @@ Scope: this skill owns the statistical TEST -- design/contrast construction, var
 |----------|-------------|-----|
 | Small n (3-5/group), protein-level summary matrix | limma `eBayes(trend=TRUE, robust=TRUE)` | EB borrows variance across proteins; the trend calibrates FDR across abundance |
 | PSM/peptide counts available (TMT or label-free DDA) | DEqMS `spectraCounteBayes` | prior keyed on quant depth removes single-PSM false positives limma admits |
-| Label-free with many MNAR missing values, on/off proteins | proDA `test_diff` | models the censored dropout; never imputes; correct verdict for "undetected in one group" |
+| Label-free with many MNAR missing values, on/off proteins | proDA `test_diff` | models the censored dropout; never imputes. It is honest but underpowered for on/off proteins at n=3-5 (0 of 11 called at n=4, best adj_pval 0.17): report those as a separate undetected list, not as non-significant |
 | Outlier-peptide risk, unbalanced peptide coverage | msqrob2 (peptide-level robust ridge) | keeps feature df; Huber downweights bad peptides; best FDR in spike-in benchmarks |
 | Technical replicates, nested/repeated-measures, labeled (SRM/PRM/DIA) | MSstats (feature-level mixed model) | random effects capture run/subject structure summarize-then-test discards |
 | Batch present | batch as a covariate in the design (`~ batch + condition`) | `removeBatchEffect` is visualization-only; never feed its output to `lmFit` |
@@ -65,7 +65,7 @@ Default when uncertain: protein-level summary matrix at n=3-5 -> limma `eBayes(t
 
 **Goal:** Identify differentially abundant proteins using moderated statistics that borrow information across all proteins.
 
-**Approach:** Filter to proteins with enough valid values per group (rows with no or too few values give `NA` averages that stop `eBayes(trend = TRUE)`), build the design (batch as a covariate when present), fit the linear model and contrast, apply EB moderation with the intensity trend and robust fitting, then extract BH-corrected results. Report proteins removed by the filter (e.g. undetected in one group) separately. Never feed `removeBatchEffect` output to `lmFit`.
+**Approach:** Filter to proteins with enough valid values per group (rows with no or too few values give `NA` averages that stop `eBayes(trend = TRUE)`), build the design (batch as a covariate when present), fit the linear model, drop rows the design cannot estimate, then contrast, apply EB moderation with the intensity trend and robust fitting, and extract BH-corrected results. The per-condition count is NOT sufficient in a paired or blocked design (donor, subject or batch in the model): rows whose observed values fall in different blocks in the two conditions leave zero residual df or a partly `NA` coefficient vector, and limma tests them anyway on a contrast that is partly a block difference. Report proteins removed by either filter (e.g. undetected in one group) separately. Never feed `removeBatchEffect` output to `lmFit`.
 
 ```r
 library(limma)
@@ -79,6 +79,11 @@ design <- model.matrix(~0 + condition + batch, data = sample_info)  # batch in t
 colnames(design)[seq_len(nlevels(cond))] <- levels(cond)
 
 fit <- lmFit(protein_matrix, design)
+# Estimability filter: the per-group count above does not make the contrast estimable under a blocked
+# design ('Partial NA coefficients for N probe(s)'). Keep only fully estimated rows with residual df.
+estimable <- fit$df.residual > 0 & rowSums(is.na(fit$coefficients)) == 0
+fit <- fit[estimable, ]    # report the dropped rows; they are the non-estimable ones, not "not significant"
+
 contrast_matrix <- makeContrasts(Treatment - Control, levels = design)
 fit2 <- contrasts.fit(fit, contrast_matrix)
 fit2 <- eBayes(fit2, trend = TRUE, robust = TRUE)  # trend mandatory for label-free; robust Winsorizes outliers
@@ -121,7 +126,7 @@ results <- outputResult(fit3, coef_col = 1)
 
 **Goal:** Test proteins with extensive MNAR missingness, including on/off proteins, without imputing a single value.
 
-**Approach:** Fit the probabilistic-dropout model directly on the log-intensity matrix; missing values contribute as left-censored observations under a per-sample dropout curve. Then test the contrast against zero.
+**Approach:** Fit the probabilistic-dropout model directly on the log-intensity matrix; missing values contribute as left-censored observations under a per-sample dropout curve. Then test the contrast against zero. proDA keeps on/off proteins in the model honestly but rarely reaches significance for them at n=3-5 -- a censored observation carries less information than a measured one -- so list them as "undetected in group X" rather than reading their non-significance as evidence of no change.
 
 ```r
 library(proDA)
@@ -138,7 +143,7 @@ results <- test_diff(fit, 'conditionTreatment')
 
 **Goal:** Run the full pipeline in Python when no R is available and n is large enough that moderation is unnecessary.
 
-**Approach:** Log2-transform, median-normalize, run per-protein Welch t-tests, apply Benjamini-Hochberg. This has NO variance moderation and should not be used at n=3-5 -- escalate to limma/DEqMS for small n.
+**Approach:** Log2-transform, median-normalize, run per-protein Welch t-tests, apply Benjamini-Hochberg. Return the untestable proteins (fewer than 2 values in a group) alongside the results, as the limma section requires -- they are not "not significant". This has NO variance moderation and should not be used at n=3-5 -- escalate to limma/DEqMS for small n.
 
 ```python
 import numpy as np
@@ -152,17 +157,19 @@ def preprocess(intensities):
     return log2_data - sample_medians + sample_medians.median()
 
 def differential_abundance(normalized, case_cols, ctrl_cols):
-    rows = []
+    rows, untestable = [], []
     for protein in normalized.index:
         case, ctrl = normalized.loc[protein, case_cols].dropna(), normalized.loc[protein, ctrl_cols].dropna()
         if len(case) >= 2 and len(ctrl) >= 2:
             _, pval = stats.ttest_ind(case, ctrl, equal_var=False)  # Welch; scipy defaults to Student's True
             rows.append({'protein': protein, 'log2fc': case.mean() - ctrl.mean(), 'pvalue': pval})
+        else:  # never drop these silently: proteins undetected in one group are often the largest real changes
+            untestable.append({'protein': protein, 'n_case': len(case), 'n_ctrl': len(ctrl)})
     if not rows:
         raise ValueError('No protein has >= 2 non-missing values in both groups; a two-sample test is not possible')
     df = pd.DataFrame(rows)
     df['padj'] = multipletests(df['pvalue'], method='fdr_bh')[1]  # default is Holm-Sidak; pass fdr_bh explicitly
-    return df
+    return df, pd.DataFrame(untestable, columns=['protein', 'n_case', 'n_ctrl'])  # report the second table too
 ```
 
 ## Fold-Change Reporting
@@ -248,6 +255,7 @@ lfsr <- shrunk$result$lfsr
 | min-FC test inflates FDR | `topTable(lfc=...)` or post-hoc volcano double filter | `treat(fit, lfc=log2(1.2), trend=TRUE, robust=TRUE)` then `topTreat()` |
 | treat() list moderated without the intensity trend | `treat()` re-estimates the prior with `trend=FALSE, robust=FALSE` by default | pass `trend = TRUE, robust = TRUE` to `treat()` |
 | `eBayes`: `prior.weights contain NA values` | rows with no valid value (MaxQuant all-zero LFQ rows) or too few per group | valid-value filter before `lmFit` |
+| `lmFit`: `Partial NA coefficients for N probe(s)`; `stopifnot(all(fit2$df.residual > 0))` fires | a paired/blocked design (donor, subject, batch) where a row's values sit in different blocks per condition; the per-condition valid-value filter does not catch this | `fit <- fit[fit$df.residual > 0 & rowSums(is.na(fit$coefficients)) == 0, ]` after `lmFit` |
 | DEqMS warning `longer object length is not a multiple of shorter object length` | rows with NA sigma / zero residual df reach `spectraCounteBayes` | filter before `lmFit`; require `fit2$df.residual > 0` |
 | proDA: `object 'conditionControl' not found` | intercept design with `reference_level`: coefficients are `Intercept`, `conditionTreatment` | `test_diff(fit, 'conditionTreatment')` |
 | `makeContrasts`: `object 'DrugB' not found` | design rename hard-coded to two groups | `colnames(design)[seq_len(nlevels(cond))] <- levels(cond)` |

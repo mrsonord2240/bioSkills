@@ -63,7 +63,7 @@ Tell your AI agent what you want to do:
 ## Missing-Value Handling
 
 The dominant statistical problem is missingness, and in label-free MS it is left-censored MNAR -- missing because the intensity is low. Imputing it injects directional bias:
-- Perseus/MaxQuant downshift manufactures systematic false positives (the volcano "anchor/wing" artifact) by giving on/off proteins an inflated mean offset and a collapsed within-group variance.
+- Perseus/MaxQuant downshift draws missing values from a Gaussian at mu - 1.8*sigma with SD 0.3*sigma, where mu and sigma describe ALL proteins in the run, not the replicate spread. An on/off protein's fold change is then set by the downshift constant and its own intensity (the volcano "anchor/wing" artifact) and its p-value carries no FDR guarantee -- whether 0.3*sigma is narrower or wider than the real replicate SD decides whether this inflates false positives or only costs power.
 - kNN/mean imputation is mean-reverting and compresses real down-regulation.
 - The correct approach models the dropout: proDA (probabilistic dropout), msqrob2, or MSstats with AFT censoring. Report on/off proteins as "undetected in group X", not as a giant fold change.
 
@@ -79,7 +79,7 @@ The dominant statistical problem is missingness, and in label-free MS it is left
 - Use `eBayes(trend = TRUE, robust = TRUE)` -- the trend is effectively mandatory for label-free intensity data.
 - Use `equal_var=False` in `scipy.stats.ttest_ind` (the default is Student's), and pass `method='fdr_bh'` to `multipletests` (the default is Holm-Sidak).
 - limma `topTable`/`topTreat` return `adj.P.Val` (there is no `$FDR` column); `topTreat` omits `B`.
-- For a minimum effect size use `treat()`+`topTreat()`; never `topTable(lfc=...)` nor a post-hoc `abs(logFC)>1 & adj.P.Val<0.05` double filter (it inflates realized FDR above 50%).
+- For a minimum effect size use `treat()`+`topTreat()`; never `topTable(lfc=...)` nor a post-hoc `abs(logFC)>1 & adj.P.Val<0.05` double filter (the BH guarantee then refers to FC = 0, not to the threshold; how far realized FDR inflates is regime-specific -- above 50% for top-ranked lists with many small effects, far less when true effects are large).
 - Include batch as a covariate in the design; use `removeBatchEffect()` only for PCA/visualization, never as input to `lmFit`.
 - For DEqMS use PSM count for TMT and peptide count for label-free, and the minimum count across batches for multi-batch TMT.
 - Check volcano symmetry: rigid near-vertical streaks of pinned points signal imputation artifacts, not biology.
