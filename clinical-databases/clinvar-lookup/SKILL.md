@@ -26,6 +26,8 @@ If code throws ImportError, AttributeError, or TypeError, introspect the install
 
 **Scope:** ClinVar assertions are research evidence. A database entry is not a diagnosis: a result for an individual needs confirmation in a clinically validated test and interpretation by a qualified clinical genetics service. Star ratings describe review depth, not fitness for clinical action.
 
+**Data governance:** variant lists derived from patients or research participants are sent to third-party services (NCBI E-utilities, ClinGen Allele Registry) as plaintext HGVS/rsID/coordinates when queried in bulk. Confirm consent and IRB/data-use approvals cover sending participant-derived variants to public APIs before batch-querying; a single research-use lookup of a public variant is a different risk profile than a cohort VCF.
+
 ## The Identifier Hierarchy (VCV / SCV / RCV): Get This Wrong and Everything Downstream Breaks
 
 | Level | Format | What it aggregates | When to use | Fails when |
@@ -90,6 +92,9 @@ import time
 import requests
 
 EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'
+# Without an API key, E-utilities caps requests at 3/s (the time.sleep(0.34) below).
+# Register a free key at https://www.ncbi.nlm.nih.gov/account/settings/ and pass
+# api_key=os.environ['NCBI_API_KEY'] in every params dict to raise the cap to 10/s.
 
 def clinvar_summary(variation_id):
     '''Retrieve VCV-level summary by ClinVar VariationID (do not confuse with CA ID).
