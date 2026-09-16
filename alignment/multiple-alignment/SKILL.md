@@ -209,12 +209,12 @@ For HMM-curated families (Pfam, Rfam), `hmmalign --trim --outformat afa profile.
 
 ## Running MUSCLE5
 
-Pick `-align` (PPP) for peak-accuracy runs up to ~1000 sequences, or `-super5` (mBed clustering + chunked alignment) for thousands to millions. `-super5` is not a "lower quality" mode; both share the same HMM-perturbation ensemble machinery.
+Pick `-align` (PPP) for peak-accuracy runs up to ~1000 sequences, or `-super5` (mBed clustering + chunked alignment) for thousands to millions. `-super5` is not a "lower quality" mode; both share the same HMM-perturbation single-replicate machinery (`-perm`/`-perturb`), but only `-align` accepts the `-stratified`/`-diversified` ensemble flags directly -- `-super5` rejects them (checked on MUSCLE 5.3.win64: `-super5 ... -stratified` fails with "-stratified not supported").
 
 | Command | Algorithm | Designed for | Output |
 |---------|-----------|--------------|--------|
-| `-align` (PPP) | Posterior probability progressive (HMM) | <= ~1000 seqs, peak accuracy | Single MSA or .efa ensemble |
-| `-super5` | mBed-clustering + chunked alignment | Thousands to millions of seqs | Single MSA or .efa ensemble |
+| `-align` (PPP) | Posterior probability progressive (HMM) | <= ~1000 seqs, peak accuracy | Single MSA, or `.efa` ensemble via `-stratified`/`-diversified` |
+| `-super5` | mBed-clustering + chunked alignment | Thousands to millions of seqs | Single MSA only per run; no direct `.efa` (combine several `-perm`/`-perturb` runs with `-fa2efa` for an ensemble) |
 
 ### Basic Usage
 
@@ -230,17 +230,30 @@ muscle -super5 input.fasta -output aligned.fasta -threads 8
 
 **Goal:** Quantify alignment uncertainty by generating multiple HMM-perturbed alignments and measuring column consistency.
 
-**Approach:** MUSCLE5 (Edgar 2022 Nat Comm) ships two ensemble modes: `-stratified` (16 replicates by default: the `-replicates` flag defaults to 4 HMM-perturbation seeds x 4 guide-tree permutations) and `-diversified` (100 replicates by default). Both write an Ensemble FASTA (.efa) file containing all replicates; column-level confidence is the fraction of replicates that place a given residue pair in the same column. `-perturb SEED` is a separate flag that sets the HMM-perturbation random seed, not an ensemble selector.
+**Approach:** MUSCLE5 (Edgar 2022 Nat Comm) ships two ensemble modes: `-stratified` (16 replicates by default: the `-replicates` flag defaults to 4 HMM-perturbation seeds x 4 guide-tree permutations) and `-diversified` (100 replicates by default). Both belong to the `-align` (PPP) command, not `-super5` -- `-super5` only accepts `-perm`/`-perturb` for a single replicate and rejects `-stratified`/`-diversified`/`-replicates` outright (checked on MUSCLE 5.3.win64: each fails with "`<flag>` not supported"). Both write an Ensemble FASTA (.efa) file containing all replicates; column-level confidence is the fraction of replicates that place a given residue pair in the same column. `-perturb SEED` is a separate flag that sets the HMM-perturbation random seed, not an ensemble selector.
 
 ```bash
 # Stratified ensemble: 16 replicates (4 HMM-perturbation seeds x 4 guide-tree permutations)
-muscle -super5 input.fasta -stratified -output ensemble.efa
+# Verified on MUSCLE 5.3.win64 / prot15_unaligned.fa (15 seqs): produced 240 aligned records = 16 x 15
+muscle -align input.fasta -stratified -output ensemble.efa
 
 # Diversified ensemble: 100 replicates exploring guide-tree and HMM space
-muscle -super5 input.fasta -diversified -output ensemble.efa
+# Verified: produced 1500 aligned records = 100 x 15
+muscle -align input.fasta -diversified -output ensemble.efa
 
 # Optional: change replicate count and HMM-perturbation seed
-muscle -super5 input.fasta -stratified -replicates 8 -perturb 42 -output ensemble.efa
+muscle -align input.fasta -stratified -replicates 8 -perturb 42 -output ensemble.efa
+```
+
+`-align` scales to peak accuracy only up to ~1000 sequences. Above that you need `-super5`, which cannot write `.efa` directly. Run it once per replicate with a distinct `-perm`/`-perturb` pair, then combine the single alignments into one ensemble with `-fa2efa` (verified: 3 `-super5` single-replicate runs combined into one 45-record `.efa` = 3 x 15 seqs):
+
+```bash
+# >1000 sequences: build replicates individually with -super5, then merge into one ensemble
+muscle -super5 input.fasta -perm none -perturb 1 -output rep1.afa
+muscle -super5 input.fasta -perm abc  -perturb 2 -output rep2.afa
+muscle -super5 input.fasta -perm acb  -perturb 3 -output rep3.afa
+printf 'rep1.afa\nrep2.afa\nrep3.afa\n' > replicates.txt
+muscle -fa2efa replicates.txt -output ensemble.efa
 ```
 
 The .efa output is consumed downstream to derive confidence-weighted bootstrap support: each replicate is fed to a tree builder and the resulting trees combined (Edgar 2022 supplement). Columns consistently aligned across replicates are reliable; high-divergence regions diverge between replicates and should be flagged before phylogenetic inference.
@@ -431,7 +444,7 @@ Before proceeding to downstream analysis, verify alignment quality:
 |------|---------|
 | Best accuracy (<200 seqs) | `mafft --localpair --maxiterate 1000 in.fa > out.fa` |
 | Large dataset | `mafft --retree 2 in.fa > out.fa` or `clustalo -i in.fa -o out.fa` |
-| Uncertainty estimation | `muscle -super5 in.fa -stratified -output out.efa` |
+| Uncertainty estimation | `muscle -align in.fa -stratified -output out.efa` |
 | Codon-aware | Align protein first, then `pal2nal.pl prot.fa cds.fa -output fasta` |
 | Add to existing MSA | `mafft --add new.fa existing.fa > updated.fa` |
 | Profile merge | `clustalo --p1 msa1.fa --p2 msa2.fa -o merged.fa` |
