@@ -93,19 +93,9 @@ Karczewski 2020 *Nature* 581:434 defined LOEUF as the upper bound of the 90% CI 
 | v4 | `non_neuro` | Deprecated | -- |
 | v4 | `non_cancer` | Unnecessary (no TCGA in v4) | -- |
 
-## SV Catalog and CNV
+SV and CNV catalog details (gnomAD-SV v2/v4 release stats, gnomAD-CNV v4) are in the usage guide.
 
-| Resource | Release | Samples | Coverage |
-|----------|---------|---------|----------|
-| gnomAD-SV v2 | Collins 2020 *Nature* 581:444 | 14,891 unrelated WGS | 433k SVs, GRCh37 |
-| gnomAD-SV v4 | Nov 2023 | 63,046 unrelated WGS | 1,199,117 high-confidence SVs, GRCh38 |
-| gnomAD-CNV v4 | Nov 2023 | 464,297 individuals (exome-derived gCNV) | Rare (AF < 1%) autosomal coding CNVs |
-
-gnomAD-CNV v4 is the resource that democratized exome-derived CNV background frequencies; previously only ExAC-CNV provided this at scale.
-
-## mtDNA (Laricchia 2022 *Genome Res* 32:569)
-
-10,850 unique mtDNA variants across 56,434 individuals (v3.1). Frequencies reported per nuclear-ancestry AND per mitochondrial-haplogroup. Heteroplasmy >=10% threshold; ~1/250 individuals carry pathogenic mtDNA variant at heteroplasmy >=10%. mtDNA inheritance is non-Mendelian; standard ACMG criteria do not apply directly; use MITOMAP and HmtVar in parallel.
+mtDNA catalog details (Laricchia 2022 *Genome Res* 32:569 frequencies and heteroplasmy thresholds) are in the usage guide.
 
 ## VEP Version Pinning
 
@@ -414,16 +404,7 @@ def filter_rare_variants_hail(input_vcf, max_grpmax_faf95=0.0001, output_path='f
 | SV not found in v4-SV | v2-SV is GRCh37, v4-SV is GRCh38; or variant not called in WGS | Try v2-SV with liftover; or check gnomAD-CNV for exome-derived |
 | mtDNA variant missing | Only v3.1 has mtDNA; not in v4 | Query v3.1 directly |
 
-## Anticipated Reviewer Pushback
-
-| Pushback | Standard response |
-|----------|-------------------|
-| "Why FAF95 instead of AF?" | Raw AF is point estimate; FAF95 is Poisson lower-bound 95% CI; ClinGen SVI recommendation for BS1/BA1. |
-| "Why exclude FIN and ASJ from grpmax?" | Founder-population pathogenic variants reach high AF locally; including them would trigger false BA1. |
-| "This LOEUF differs from the 2020 paper" | We use v4 March 2024 constraint (807k samples); 2020 paper used v2 (141k samples). Decile rank is stable; absolute shifted. |
-| "Why v3 if v4 exists?" | v4 genomes = v3 genomes reprocessed; for genome-only analysis they are equivalent. |
-| "Variant exists in liftover v2 but not v4" | ~0.5-1% of sites differ post-assembly fixes; use v4 native, not liftover, as ground truth. |
-| "Browser AF higher than this value" | Browser includes flagged variants by default; we filter on PASS. |
+Anticipated reviewer pushback and standard responses are in the usage guide.
 
 ## References
 
