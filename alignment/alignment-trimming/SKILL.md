@@ -21,7 +21,7 @@ If code throws ImportError, AttributeError, or TypeError, introspect the install
 - CLI: `clipkit`, `trimal`, `BMGE`, `Divvier`, `HMMcleaner`
 - Python: post-process via Bio.AlignIO with custom column masks
 
-**"Make this alignment publication-grade for phylogenetics"** -> Apply ClipKIT's `smart-gap` mode (its default), or trimAl `-automated1`, then verify via tree-stability comparison before vs after trimming.
+**"Make this alignment publication-grade for phylogenetics"** -> Apply ClipKIT's `smart-gap` mode (its default), or trimAl `-automated1` for typical/exploratory publication use -- not for audit-grade reproducibility work, where the underlying mode must be named explicitly (see Reproducibility note under trimAl Modes) -- then verify via tree-stability comparison before vs after trimming.
 
 Tool choice and aggressiveness matter more than trimming vs not-trimming. Pick a mode by dataset character (table below), and always run a sensitivity check by building trees on trimmed and untrimmed alignments.
 
@@ -47,7 +47,7 @@ Always run a sensitivity analysis: build the tree on trimmed AND untrimmed align
 | Phylogenetic-tree input (single gene) | ClipKIT `smart-gap` | Default mode; dynamic gap-threshold determination |
 | HMM profile building (HMMER, HHsuite) | trimAl `-gappyout` (Capella-Gutierrez et al 2009 Bioinf) | Aggressive gap removal acceptable; profile quality benefits |
 | Selection / dN/dS analysis (PAML, HyPhy) | TCS column masking or GUIDANCE2 (NOT aggressive trimming) | Removing columns causes false-positive selection signals (Fletcher & Yang 2010 MBE) |
-| Deep prokaryotic phylogenomics | BMGE (Criscuolo & Gribaldo 2010 BMC Evol Biol) | Entropy-based with BLOSUM62 context; standard in GToTree pipeline |
+| Deep prokaryotic phylogenomics | BMGE (Criscuolo & Gribaldo 2010 BMC Evol Biol) | Substitution-matrix entropy (BLOSUM62 in 1.12, BLOSUM30 in 2.0); standard in GToTree pipeline |
 | Cross-contaminated sequences | HMMcleaner (Di Franco et al 2019 BMC Evol Biol) | Per-residue cleaning; targets contamination not column quality |
 | Preserve phylogenetic signal in indels | Divvier (Ali, Bogusz & Whelan 2019 MBE) | Splits ambiguous columns rather than removing them |
 | Column-mapping retention for site analysis | trimAl `-colnumbering` | Outputs original-column indices for downstream cross-reference |
@@ -219,7 +219,7 @@ python phyin.py -input input.fasta -output trimmed.fasta -b 10 -d 2 -p 0.5
 What is the next step?
 +- Phylogenetic ML tree (RAxML, IQ-TREE)
 |  +- Concatenated supermatrix? -> ClipKIT smart-gap per locus, then concatenate
-|  +- Single gene? -> ClipKIT smart-gap or trimAl -automated1
+|  +- Single gene? -> ClipKIT smart-gap or trimAl -automated1 (not for audit-grade reproducibility -- see Reproducibility note)
 |  +- Topology only, balanced taxa? -> kpic-smart-gap allowed, with the branch-length check
 |  +- Deep prokaryotic? -> BMGE at its default entropy threshold; check retention
 |  +- Suspected cross-contamination? -> HMMcleaner first, then ClipKIT
@@ -299,7 +299,7 @@ If retention drops below 0.6, switch to a less aggressive setting or accept the 
 When trimming for phylogenetic input, retain the column-index mapping so downstream site-specific analyses (selection per site, structure-mapped residues, etc.) can be back-traced:
 
 ```bash
-trimal -in input.fasta -out trimmed.fasta -automated1 -colnumbering > kept_columns.txt
+trimal -in input.fasta -out trimmed.fasta -gappyout -colnumbering > kept_columns.txt
 
 clipkit input.fasta -m smart-gap --log -o trimmed.fasta
 ```
