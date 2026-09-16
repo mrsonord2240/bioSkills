@@ -139,7 +139,13 @@ skat <- SKAT(Z, obj, weights.beta = c(1, 25))
 c(skato = skato$p.value, burden = burden$p.value, skat = skat$p.value)
 ```
 
-For genome-wide gene scans, build an SSD file with `Generate_SSD_SetID(bed, bim, fam, SetID, SSD, Info)`, `Open_SSD()`, then `SKAT.SSD.All(SSD.INFO, obj)` to test every set without holding all matrices in memory.
+For genome-wide gene scans, build an SSD file with `Generate_SSD_SetID(bed, bim, fam, SetID, SSD, Info)`, `Open_SSD()`, then `SKAT.SSD.All(SSD.INFO, obj)` to test every set without holding all matrices in memory. `SKAT.SSD.All` matches `obj`'s covariate/phenotype rows to the SSD genotypes purely by ROW POSITION (no ID join) - before fitting the null model, confirm `covar_df` is already sorted to the same sample order as the `.fam` file the SSD was built from:
+
+```r
+fam <- read.table(fam_file, header = FALSE, stringsAsFactors = FALSE)  # PLINK .fam: FID IID PAT MAT SEX PHENOTYPE
+stopifnot(identical(fam$V2, covar_df$IID))  # IID is column 2 (V2); must match covar_df row order exactly
+obj <- SKAT_Null_Model(phenotype ~ age + sex + PC1 + PC2, out_type = 'D', data = covar_df)
+```
 
 ## Per-Method Failure Modes
 
