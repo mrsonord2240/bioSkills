@@ -136,10 +136,29 @@ A variant's consequence prediction can flip between v2 and v4 due to MANE Select
 **Approach:** Hit gnomAD's GraphQL API with explicit dataset version; parse the nested response.
 
 ```python
+import time
 import requests
 
 GNOMAD_API = 'https://gnomad.broadinstitute.org/api'
 DATASET_BUILD = {'gnomad_r4': 'GRCh38', 'gnomad_r3': 'GRCh38', 'gnomad_r2_1': 'GRCh37'}
+
+def _post_graphql(query, variables, max_retries=5, base_delay=2.0):
+    '''POST to the gnomAD GraphQL API with bounded exponential backoff on HTTP 429.
+
+    The browser API rate-limits sustained querying: HTTP 429 (a plain HTML page, not JSON) was
+    observed live after one gene-variant-list query plus a handful of single lookups (checked
+    2026-09-15). For more than a few dozen variants, use the Hail Table or sites VCF (see Bulk
+    Query via Hail below) instead of looping GraphQL calls.
+    '''
+    for attempt in range(max_retries):
+        r = requests.post(GNOMAD_API, json={'query': query, 'variables': variables}, timeout=30)
+        if r.status_code == 429:
+            time.sleep(base_delay * (2 ** attempt))
+            continue
+        r.raise_for_status()
+        return r.json()
+    r.raise_for_status()  # exhausted retries; surface the last response's error
+    return r.json()
 
 def query_variant(chrom, pos, ref, alt, build, dataset='gnomad_r4'):
     '''Query gnomAD GraphQL for variant frequency + grpmax FAF95.
@@ -148,7 +167,8 @@ def query_variant(chrom, pos, ref, alt, build, dataset='gnomad_r4'):
     (gnomad_r4 / gnomad_r3 = GRCh38, gnomad_r2_1 = GRCh37). GRCh37 ids sent to gnomad_r4 return
     "Variant not found", the same answer as a truly absent variant.
     Returns the variant payload, or None when the variant is not in this dataset; raises on any
-    other GraphQL error.
+    other GraphQL error. Retries with backoff on HTTP 429 (see _post_graphql); when batch-querying,
+    pace calls with time.sleep(0.2-0.5) between variants to avoid triggering it.
     '''
     if DATASET_BUILD[dataset] != build:
         raise ValueError(f'{dataset} is {DATASET_BUILD[dataset]} but the coordinates are {build}')
@@ -179,11 +199,7 @@ def query_variant(chrom, pos, ref, alt, build, dataset='gnomad_r4'):
     }
     '''
     variant_id = f'{chrom}-{pos}-{ref}-{alt}'
-    r = requests.post(GNOMAD_API,
-                      json={'query': query, 'variables': {'variantId': variant_id, 'dataset': dataset}},
-                      timeout=30)
-    r.raise_for_status()
-    body = r.json()
+    body = _post_graphql(query, {'variantId': variant_id, 'dataset': dataset})
     errors = [e.get('message') for e in body.get('errors') or []]
     if errors and errors != ['Variant not found']:
         raise RuntimeError(f'gnomAD GraphQL error for {variant_id} ({dataset}): {errors}')
@@ -271,11 +287,7 @@ def query_gene_constraint(gene_symbol, dataset='gnomad_r4'):
       }
     }
     '''
-    r = requests.post(GNOMAD_API,
-                      json={'query': query, 'variables': {'symbol': gene_symbol}},
-                      timeout=30)
-    r.raise_for_status()
-    gene = r.json().get('data', {}).get('gene')
+    gene = _post_graphql(query, {'symbol': gene_symbol}).get('data', {}).get('gene')
     if gene is None:
         return None
     if gene.get('gnomad_constraint') is None:
