@@ -135,11 +135,18 @@ For calibrated nodes the prior-only MCC tree may not contain every posterior cla
 **Approach:** Regress root-to-tip distance on sampling date (positive slope, sane intercept, outliers flagged), then run a date-randomization test; only date if the real estimate sits outside the randomized cloud.
 
 ```bash
-# Build a quick ML tree to feed TempEst (modern-tree-inference)
+# Build a quick ML tree, then regress root-to-tip distance on sampling date
+# (TempEst does the same thing interactively as a GUI, no CLI: beast.community/tempest)
 # (bioconda installs IQ-TREE 3 as `iqtree3`/`iqtree`; on IQ-TREE 2.x the binary is `iqtree2`)
 iqtree3 -s seqs.fa -m GTR+G -T AUTO --prefix rttree
-# TempEst (GUI): load rttree.treefile + a tab file of tip sampling dates;
-# read the root-to-tip regression -- require a POSITIVE slope; inspect R^2 and residual outliers.
+python examples/root_to_tip.py rttree.treefile dates.tsv   # dates.tsv: tip <tab> date
+# require a POSITIVE slope (the slope estimates the rate); R^2 is exploratory only,
+# treat near-zero / << ~0.2 as a red flag, not a formal pass
+
+# Date-randomization test (Duchene et al. 2015), the formal test: shuffle tip dates
+# N times, rerun LSD2 on the SAME topology each time, compare the real rate to the cloud
+python examples/date_randomization.py seqs.fa rttree.treefile dates.tsv 20
+# real rate OUTSIDE the shuffled range -> temporal signal; INSIDE -> do not report a date
 
 # Fast non-Bayesian tip-dating + CI as a cross-check (LSD2 via IQ-TREE)
 iqtree3 -s seqs.fa -m GTR+G --date dates.tsv --date-ci 100 --prefix lsd2   # dates.tsv: tip <tab> date
@@ -187,7 +194,7 @@ A positive slope is necessary, not sufficient: a dataset sampled over a few mont
 | Independent MCMC chains | >= 2, posteriors must overlap | convergence cannot be judged from one chain |
 | Burn-in discarded | >= 10% (confirm by trace, not rote) | standard practice; verify stationarity |
 | Soft-bound tail probability | 0.025 per bound | Yang and Rannala 2006; MCMCTree `pL = pU = 0.025` |
-| Root-to-tip R^2 (TempEst) | exploratory; near-zero / << ~0.2 = weak signal; positive slope mandatory | Rambaut et al. 2016 (tips non-independent, not a formal test) |
+| Root-to-tip R^2 (examples/root_to_tip.py or TempEst GUI) | exploratory; near-zero / << ~0.2 = weak signal; positive slope mandatory | Rambaut et al. 2016 (tips non-independent, not a formal test) |
 | Date-randomization test | real-data rate estimate outside the randomized distribution (no CI overlap) | Duchene et al. 2015 |
 | Coefficient of variation of branch rates | abutting 0 -> strict adequate; clearly > 0 (0 excluded) -> relaxed needed | Drummond et al. 2006 |
 | Infinite-sites plot | points on the linear CI-width-vs-age line -> more sites will not help | dos Reis and Yang 2011 |
