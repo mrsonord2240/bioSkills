@@ -101,14 +101,26 @@ protein_abundance <- processed$ProteinLevelData
 
 **Goal:** Produce MaxLFQ protein intensities from a peptide quant matrix.
 
-**Approach:** Call `iq::maxLFQ()`, which implements the Cox 2014 maximal peptide-ratio least-squares step. It does NOT perform delayed normalization, so run-level loading offsets pass straight into the estimates: median-normalize each run's peptide log2 intensities first (`iq::preprocess(median_normalization = TRUE)` does this for long-format input). Per-sample median centering of the protein matrix shares only the name and silently gives a different answer.
+**Approach:** Call `iq::maxLFQ()`, which implements the Cox 2014 maximal peptide-ratio least-squares step. It does NOT perform delayed normalization, so run-level loading offsets pass straight into the estimates: median-normalize each run's peptide log2 intensities first. `maxLFQ()` takes ONE protein's matrix, so a whole table goes through `preprocess` -> `create_protein_list` -> `create_protein_table`. Per-sample median centering of the protein matrix shares only the name and silently gives a different answer.
 
 ```r
 library(iq)
 
-# rows = peptide ions, columns = samples, values = RUN-NORMALIZED log2 intensities for ONE protein group
-result <- maxLFQ(peptide_log2_matrix)
-protein_estimate <- result$estimate    # one MaxLFQ value per sample
+# peptide_long: one row per peptide ion per run, RAW intensities (protein, ion, run, intensity)
+norm <- preprocess(peptide_long, primary_id = 'protein', secondary_id = 'ion', sample_id = 'run',
+                   intensity_col = 'intensity', median_normalization = TRUE, pdf_out = NULL)
+protein_list  <- create_protein_list(norm)    # one run-normalized log2 matrix per protein
+protein_table <- create_protein_table(protein_list, method = 'maxLFQ')
+protein_matrix <- protein_table$estimate      # proteins x samples
+
+# maxLFQ solves per-protein least squares only within CONNECTED sample sets; a non-empty annotation
+# marks proteins whose samples split into groups that are NOT on one common scale
+disconnected <- rownames(protein_matrix)[nzchar(protein_table$annotation)]
+
+# one protein at a time: rows = peptide ions, columns = samples, values = RUN-NORMALIZED log2 intensities
+result <- maxLFQ(protein_list[[1]])
+# $estimate is an UNNAMED vector in the input column order; name it or samples silently transpose
+protein_estimate <- setNames(result$estimate, colnames(protein_list[[1]]))
 ```
 
 ### Median-center label-free intensities (a normalizer, not a summarizer)
@@ -138,12 +150,17 @@ normalized = log_int - sample_medians + sample_medians.median()
 library(MSnbase)
 
 raw <- readMSData('experiment.mzML', mode = 'onDisk')
-# method='max' for centroided spectra; reporters=TMT10 defines the 126-131 reporter m/z
+# method='max' for centroided spectra; reporters=TMT10 defines the 126-131 reporter m/z.
+# TMTpro 16plex uses reporters = TMT16 (126..134N); MSnbase 2.32.0 has no TMT18 set.
 quant <- quantify(raw, reporters = TMT10, method = 'max')
 
 # edit = FALSE: the default edit = TRUE calls edit(M) and blocks under Rscript / on a cluster.
-# x = 10 is the manufacturer template; REPLACE with lot-specific Certificate of Analysis values, e.g.
-# imp <- makeImpuritiesMatrix(filename = 'lot_coa.csv', edit = FALSE)  # layout as MSnbase extdata TMT6plexPurityCorrections.csv
+# x = is a MANUFACTURER TEMPLATE and MSnbase ships templates only for x = 4, 6, 8, 10; any other x
+# (TMTpro 16) falls through to an unnamed diag(x) and stops with "length of 'dimnames' [1] not equal
+# to array extent". REPLACE with lot-specific Certificate of Analysis values -- for TMTpro the only route:
+# imp <- makeImpuritiesMatrix(filename = 'lot_coa.csv', edit = FALSE)  # layout as MSnbase extdata
+#   TMT6plexPurityCorrections.csv: one row per channel, one column per neighbour OFFSET
+#   (-n/2..-1, +1..+n/2) in percent, so a 16plex CoA needs 16 offset columns
 imp <- makeImpuritiesMatrix(x = 10, edit = FALSE)
 quant <- purityCorrect(quant, imp)
 ```
@@ -269,9 +286,11 @@ def silac_log2_ratio(heavy, light):
 | `log2(0) = -inf` in the matrix | MaxQuant writes 0 for "not quantified" | replace 0 -> NaN before any transform |
 | Reading `Intensity` when ratios needed | `Intensity` is raw, not normalized; `iBAQ` is within-sample only | use `LFQ intensity` for between-sample LFQ ratios (see data-import) |
 | Median centering called MaxLFQ | homebrew shares only the name | call `iq::maxLFQ()` / DIA-NN / MaxQuant |
+| `maxLFQ()` returns 8 numbers with no sample names; columns end up scrambled | `$estimate` is an unnamed vector in the input column order, and `maxLFQ()` handles ONE protein | `setNames(result$estimate, colnames(m))`; for a whole table use `preprocess` -> `create_protein_list` -> `create_protein_table` |
 | On/off proteins get `log2FC = -Inf`, `issue = oneConditionMissing`; no censored handling | `MBimpute=FALSE` means no censoring model; MSstats' AFT exists only in `dataProcess(MBimpute=TRUE)` | keep `MBimpute=TRUE` for the MSstats AFT route, or keep `FALSE` and model missingness with proDA/msqrob2 (differential-abundance) |
 | `EOF within quoted string` and far fewer rows than the file | default `read.table` quoting on MaxQuant tables with apostrophes | `read.table(..., quote = '', comment.char = '')` or `data.table::fread`; check the row count |
 | Script hangs at `makeImpuritiesMatrix` under Rscript | default `edit = TRUE` opens an editor | `makeImpuritiesMatrix(x = 10, edit = FALSE)` or `filename = 'lot_coa.csv', edit = FALSE` |
+| `makeImpuritiesMatrix(x = 16)`: `length of 'dimnames' [1] not equal to array extent` | MSnbase templates exist only for x = 4, 6, 8, 10; TMTpro falls through to an unnamed `diag(x)` | supply the lot CoA: `makeImpuritiesMatrix(filename = 'lot_coa.csv', edit = FALSE)` with 16 offset columns; quantify with `reporters = TMT16` (there is no `TMT18`) |
 | Whole plex rows become Inf/NaN after IRS | reference channel 0 or missing for that protein | mask references `<= 0`/NaN and report the unbridged proteins |
 | `eBayes`: `prior.weights contain NA values` on SILAC ratios | +/-Inf on/off codes inside the ratio matrix | NaN ratio plus a presence flag column; drop rows with no finite ratio before `lmFit` |
 | Cross-plex TMT comparison is invalid | no reference channel / no IRS | add a pooled reference channel per plex, apply SL then IRS |
