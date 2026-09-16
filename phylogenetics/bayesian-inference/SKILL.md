@@ -134,6 +134,18 @@ Samples per step = ngen / (nsteps + 1) / samplefreq (MrBayes prints "N steps wil
 
 BEAST2: install the `MODEL_SELECTION` package and run `PathSampler` (path sampling / stepping-stone); RevBayes: `powerPosterior()` + `steppingStoneSampler()`. All require proper priors, or the marginal likelihood is undefined.
 
+### Minimal BEAST2 Run
+
+**Goal:** Get from a BEAUti-built XML to a sampled posterior on the command line (checked on BEAST v2.7.7).
+
+```bash
+beast -seed 12345 -overwrite my_analysis.xml   # writes my_analysis.log and my_analysis.trees
+```
+
+`beast` needs an input XML, which BEAUti (bundled with BEAST2) builds interactively from an alignment plus a site model, clock model, and tree prior -- there is no command-line-only path to a first XML. After the run, treat the `.log` in Tracer exactly like a MrBayes `.p` file (ESS, PSRF across independent seeds) and summarize the `.trees` file with TreeAnnotator. BEAST2 does not run multiple chains itself: launch the same XML under two or more `-seed` values and combine with LogCombiner before checking convergence.
+
+RevBayes has no equivalent minimal command here: choosing RevBayes over the other three tools already means the model is not one of their built-ins, so the Rev script is necessarily bespoke to that model rather than a fill-in-the-blank template. Start from the official tutorials at revbayes.github.io for the specific model (e.g. partitioned GTR+G, or a custom hierarchical prior), and apply the same convergence gate as MrBayes (`powerPosterior()`/`steppingStoneSampler()` for marginal likelihoods; run >= 2 independent chains and check ESS/PSRF, since RevBayes has no built-in ASDSF-style topology diagnostic).
+
 ## Site-Heterogeneous CAT Models for Deep Phylogeny
 
 Standard models (GTR+G, LG/WAG+G) assume all sites share one set of equilibrium frequencies -- they are site-HOMOGENEOUS. Real proteins are not: a buried hydrophobic site and a surface charged site have different profiles. At DEEP timescales this misleads, because saturated sites convergently acquire similar compositions in unrelated lineages and a homogeneous model misreads convergent composition as shared ancestry -> long-branch attraction with HIGH PP (the overconfidence-under-misspecification mechanism made concrete). The answer is CAT / CAT-GTR (Lartillot 2004): an infinite-mixture (Dirichlet-process) model assigning sites to an unknown number of categories, each with its own amino-acid frequency profile, all inferred from the data; CAT-GTR adds one shared GTR exchangeability matrix (the PhyloBayes default with 4-category gamma). It is far more robust to LBA at depth than homogeneous models, at the cost of slow convergence (millions of cycles, days-weeks), which is why PhyloBayes-MPI parallelizes it (Lartillot 2013).
