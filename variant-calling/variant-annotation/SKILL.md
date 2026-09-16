@@ -136,6 +136,7 @@ table_annovar.pl norm.vcf humandb/ -buildver hg38 -out annotated -remove \
 ```bash
 bcftools csq -p a -f reference.fa -g genes.gff3.gz norm.vcf.gz -Oz -o csq.vcf.gz   # adds BCSQ
 bcftools annotate -a dbsnp.vcf.gz -c ID norm.vcf.gz -Oz -o rsid.vcf.gz             # copy rsIDs
+bcftools index -f rsid.vcf.gz                                                     # annotate -a needs the target indexed
 bcftools annotate -a gnomad.vcf.gz -c INFO/gnomAD_FAF:=INFO/fafmax_faf95_max rsid.vcf.gz -Oz -o af.vcf.gz  # new tag
 ```
 
