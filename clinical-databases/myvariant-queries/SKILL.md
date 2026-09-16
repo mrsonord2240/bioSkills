@@ -278,7 +278,7 @@ def find_alphamissense_pathogenic(gene, min_score=0.564):
 | Rate limit | ~1000 req/sec aggregate; lower per IP | myvariant.info docs |
 | dbNSFP refresh lag | 6-18 months from primary source release | dbNSFP release history |
 | `/v1/metadata` | Per-source versions for the instance; records carry no `_meta` | live check 2026-09-15 |
-| Lucene escape | Special chars need `\` (e.g., `chr7\:140453136`) | Elasticsearch convention |
+| Chrom:pos term | Quote a full HGVS id for an exact match (`"chr7:g.140453136A>T"`, 1 hit); the bare `chrom:pos` term also works unescaped (`chr7:140453136`, 5 hits, all variants at that position) | live check 2026-09-16 |
 | Multi-allelic rsID | ~6-8% of dbSNP rsIDs are multi-allelic | operational estimate |
 | AlphaMissense PP3 calibration | NOT yet ClinGen-endorsed (as of May 2026) | ClinGen SVI |
 | REVEL PP3_Strong calibration | >= 0.932 per Pejaver 2022 | Pejaver 2022 *AJHG* |
@@ -289,7 +289,7 @@ def find_alphamissense_pathogenic(gene, min_score=0.564):
 |---------|-------|----------|
 | `KeyError: 'gnomad_exome'` | Variant absent from gnomAD exome dataset | Use `.get('gnomad_exome', {})` defensively |
 | `None` for AlphaMissense on rare variants | dbNSFP coverage gap; variant in alt-spliced isoform | Query AlphaMissense API directly, or accept None |
-| Search returns 0 hits despite known matches | Lucene escape on `:` in chr coords | Quote the chrom-position term or escape `:` |
+| Search returns 0 hits despite known matches | `:` in a `chrom:pos` term was escaped (`chr7\:140453136`); myvariant does not want that escape | Use the unescaped `chrom:pos` term, or quote a full HGVS id for one exact variant |
 | Batch returns < input IDs | Some IDs not in any source | Check `notfound` field in response |
 | Different AF in myvariant vs gnomAD browser | myvariant carries gnomAD 2.1.1; the browser defaults to v4 | Check `src.gnomad.version` in `/v1/metadata`; use gnomad-frequencies for v4 |
 | Search returns 0 hits for ClinVar or CADD terms | Non-existent field path | Use `clinvar.rcv.clinical_significance`, `clinvar.rcv.review_status`, `cadd.phred` |
