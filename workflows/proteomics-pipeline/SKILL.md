@@ -15,7 +15,7 @@ depends_on:
 
 ## Version Compatibility
 
-Reference examples tested with: MSnbase 2.28+, limma 3.58+, DEqMS 1.20+, proDA 1.20+, MSstatsTMT 2.10+, arrow 15.0+ (DIA-NN report.parquet), ggplot2 3.5+
+Reference examples tested with: MSnbase 2.32.0, limma 3.62.2, MSstats 4.14.2, DEqMS 1.24.0, proDA 1.20.0, MSstatsTMT 2.14.2, arrow 23.0.1 (DIA-NN report.parquet), dplyr 1.2.1, tidyr 1.3.2, ggplot2 4.0.3 (checked 2026-09-15 on R 4.4.3)
 
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
@@ -28,6 +28,8 @@ package and adapt the example to match the actual API rather than retrying.
 **"Process my proteomics data from raw MS files to differential abundance"** -> Orchestrate data import (pyopenms/MaxQuant), QC assessment, protein quantification, normalization, differential abundance testing (limma/DEqMS, or MSstats for feature-level designs), and PTM analysis.
 
 This is a workflow skill: it owns the chaining decisions and hand-offs, not the internals of any one step.
+
+Scope: research cohort comparison. A pipeline output is not a diagnostic -- do not use it to triage, escalate or choose treatment for an individual patient; route those questions to validated clinical assays and the treating clinician.
 
 ## The governing principle
 
@@ -73,7 +75,7 @@ Raw MS Data (mzML) --> MaxQuant/DIA-NN --> proteinGroups.txt
 
 **Goal:** Turn a MaxQuant or DIA-NN protein matrix into a table of differentially abundant proteins with honest missing-value handling.
 
-**Approach:** Strip bookkeeping rows, log2 and inspect the RAW per-sample distributions (dropping failed loads before normalization can hide them), median-center, filter on per-group completeness, then model the dropout with proDA (or fall back to imputation), and test with moderated limma using treat() for a minimum fold change.
+**Approach:** Strip bookkeeping rows, log2 and inspect the RAW per-sample distributions (dropping failed loads before normalization can hide them), median-center, filter on per-group completeness, then test the OBSERVED values with moderated limma using treat() for a minimum fold change and batch as a covariate -- nothing is imputed. Upgrade to proDA when the dropout itself has to be modeled.
 
 ```r
 library(limma)
@@ -81,13 +83,19 @@ library(ggplot2)
 library(pheatmap)
 
 # === 1. DATA IMPORT ===
-proteins <- read.delim('proteinGroups.txt', stringsAsFactors = FALSE)
+# quote = '' / comment.char = '': MaxQuant text fields contain quotes and '#'; the defaults
+# silently truncate the table with only an 'EOF within quoted string' warning. Check the count.
+proteins <- read.delim('proteinGroups.txt', stringsAsFactors = FALSE, quote = '', comment.char = '')
+stopifnot(nrow(proteins) == length(readLines('proteinGroups.txt')) - 1)
 cat('Loaded', nrow(proteins), 'protein groups\n')
 
-# Filter contaminants, reverse, only-by-site
-proteins <- proteins[proteins$Potential.contaminant != '+' &
-                      proteins$Reverse != '+' &
-                      proteins$Only.identified.by.site != '+', ]
+# Filter contaminants, reverse, only-by-site. Use %in%, NOT `!= '+'`: when a run flags none of a
+# category the column is entirely empty, read.delim types it as logical NA, `NA != '+'` is NA, and
+# subsetting by NA replaces every row with NAs while nrow() still looks right.
+proteins <- proteins[!(proteins$Potential.contaminant %in% '+') &
+                      !(proteins$Reverse %in% '+') &
+                      !(proteins$Only.identified.by.site %in% '+'), ]
+stopifnot(!all(is.na(proteins$Majority.protein.IDs)))
 cat('After filtering:', nrow(proteins), 'proteins\n')
 
 # Extract LFQ intensities
@@ -103,12 +111,26 @@ log2_int <- log2(intensities)
 # Inspect BEFORE normalizing (rule 4). Median-centering rescales every sample onto a common median,
 # so it mathematically erases the 3x-low load that marks a failed injection -- after this point the
 # failure is invisible. Identify and drop failures HERE.
-boxplot(log2_int, las = 2, main = 'RAW log2 LFQ (pre-normalization)', ylab = 'log2 intensity')
+# Inspect the RAW `Intensity.` columns, NOT `LFQ intensity`: MaxLFQ has ALREADY renormalized the LFQ
+# columns onto a common scale, so a low load is largely gone from them before you ever look.
+raw_cols <- grep('^Intensity\\.', colnames(proteins), value = TRUE)
+raw_log2 <- log2(replace(proteins[, raw_cols], proteins[, raw_cols] == 0, NA))
+colnames(raw_log2) <- gsub('^Intensity\\.', '', colnames(raw_log2))
+raw_log2 <- raw_log2[, colnames(log2_int), drop = FALSE]
+raw_median <- apply(raw_log2, 2, median, na.rm = TRUE)
 id_counts <- colSums(!is.na(log2_int))
-print(data.frame(id_count = id_counts, raw_median_log2 = round(apply(log2_int, 2, median, na.rm = TRUE), 2)))
+boxplot(raw_log2, las = 2, main = 'RAW log2 Intensity (pre-normalization)', ylab = 'log2 intensity')
+print(data.frame(id_count = id_counts, raw_median_log2 = round(raw_median, 2),
+                 load_shift_log2 = round(raw_median - median(raw_median), 2)))
 
-# <50% of the cohort median ID count is a failed injection / low load, not biology.
-failed <- names(id_counts)[id_counts < 0.5 * median(id_counts)]
+# Flag on BOTH axes and as an OUTLIER, not a fixed fraction: a >=2x (1 log2) drop in raw median
+# signal, OR an ID count more than 3 MADs below the cohort median. Each axis alone misses cases --
+# a 3x-low injection loses its dimmest proteins entirely, so the SURVIVING median understates the
+# deficit (a 3.0x low load can read as only -0.8 log2), while a 50%-of-median ID-count rule is so
+# loose that a run at 82% of the median IDs, visibly low on both axes, passes it.
+mad_ids <- mad(id_counts)
+failed <- colnames(raw_log2)[(raw_median - median(raw_median)) <= -1 |
+                             (mad_ids > 0 & id_counts < median(id_counts) - 3 * mad_ids)]
 if (length(failed) > 0) {
     message('Dropping failed samples: ', paste(failed, collapse = ', '))
     log2_int <- log2_int[, !colnames(log2_int) %in% failed, drop = FALSE]
@@ -138,42 +160,42 @@ cat('Proteins after per-group completeness filter:', nrow(filtered), '\n')
 
 # Missingness in label-free DDA is left-censored MNAR (missing BECAUSE low). The modern,
 # correct approach is to MODEL the missingness in the likelihood, NOT impute it. See
-# proteomics/differential-abundance for the decision (proDA / msqrob2 / MSstats-AFT). The
-# proDA path below is the RECOMMENDED route; the impute-then-limma path is a fallback.
+# proteomics/differential-abundance for the decision (proDA / msqrob2 / MSstats-AFT).
+# NOTHING BELOW IMPUTES: limma fits each protein on its OBSERVED values, so the completeness
+# filter above is the only missing-value handling in the executed path.
 
-# --- RECOMMENDED: model the missingness with proDA (no imputation) ---
+# --- UPGRADE: model the dropout explicitly with proDA, then use `da` in place of `results` ---
 # library(proDA)
 # fit <- proDA(as.matrix(filtered), design = ~ condition, col_data = sample_info,
-#              reference_level = 'Control')
+#              reference_level = 'Control')            # add batch: design = ~ batch + condition
 # da <- test_diff(fit, contrast = 'conditionTreatment')   # columns: diff (log2FC), pval, adj_pval
-# (Skip the === 5-6 impute/limma blocks below when using proDA.)
 
-# --- FALLBACK ONLY: left-censored downshift imputation, then limma ---
-# WARNING: downshift MANUFACTURES systematic false positives for on/off proteins near the
-# detection limit (the volcano "anchor arms"): it pins missing values ~1.8 SD below the mean
-# with an artificially tight 0.3 SD spread, inflating the t-statistic. The honest report for
-# a protein fully missing in one group is "undetected in group B", NOT a fold change.
-impute_minprob <- function(x) {
-    nas <- is.na(x)
-    if (all(nas)) return(x)
-    x[nas] <- rnorm(sum(nas), mean = mean(x, na.rm = TRUE) - 1.8 * sd(x, na.rm = TRUE),
-                    sd = 0.3 * sd(x, na.rm = TRUE))
-    x
-}
-imputed <- as.data.frame(t(apply(filtered, 1, impute_minprob)))
+# --- DO NOT: left-censored downshift imputation, then limma ---
+# Downshift MANUFACTURES systematic false positives for on/off proteins near the detection limit
+# (the volcano "anchor arms"): it pins missing values ~1.8 SD below the mean with an artificially
+# tight 0.3 SD spread, inflating the t-numerator and deflating its denominator. The honest report
+# for a protein fully missing in one group is "undetected in group B", NOT a fold change. If a
+# reviewer demands a complete matrix anyway, seed it (set.seed) so the call list is reproducible,
+# and report the on/off proteins separately -- see proteomics/differential-abundance.
 
 # === 5. QC ===
-# PCA
-pca <- prcomp(t(imputed), scale. = TRUE)
+# PCA needs a complete matrix; use the proteins observed everywhere rather than inventing values.
+complete <- filtered[stats::complete.cases(filtered), , drop = FALSE]
+cat('Proteins used for PCA (complete cases):', nrow(complete), '\n')
+pca <- prcomp(t(complete), scale. = TRUE)
 pca_df <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], Sample = rownames(pca$x))
 
-# === 6. DIFFERENTIAL ANALYSIS (fallback impute-then-limma path) ===
-# sample_info is already loaded and factored in step 4. Put any batch in the design
-# (~ batch + condition); removeBatchEffect() is visualization-only, never an input to lmFit.
-design <- model.matrix(~ 0 + condition, data = sample_info)
-colnames(design) <- levels(sample_info$condition)
+# === 6. DIFFERENTIAL ANALYSIS (limma on the observed values) ===
+# sample_info is already loaded and factored in step 4. Batch is a COVARIATE in the same model
+# (rule 4); removeBatchEffect() is visualization-only, never an input to lmFit.
+has_batch <- 'batch' %in% colnames(sample_info) && length(unique(sample_info$batch)) > 1
+design <- if (has_batch) model.matrix(~ 0 + condition + factor(batch), data = sample_info) else
+                         model.matrix(~ 0 + condition, data = sample_info)
+colnames(design)[seq_along(levels(sample_info$condition))] <- levels(sample_info$condition)
+colnames(design) <- make.names(colnames(design))
+cat('design columns:', colnames(design), '| batch in design:', has_batch, '\n')
 
-fit <- lmFit(as.matrix(imputed), design)
+fit <- lmFit(as.matrix(filtered), design)
 contrast <- makeContrasts(Treatment - Control, levels = design)
 fit2 <- contrasts.fit(fit, contrast)
 
@@ -183,10 +205,14 @@ fit2 <- contrasts.fit(fit, contrast)
 fit2_treat <- treat(fit2, lfc = log2(1.5), trend = TRUE, robust = TRUE)   # moderated min-FC test; trend+robust ~mandatory for label-free LFQ
 results <- topTreat(fit2_treat, coef = 1, number = Inf)
 results$protein <- rownames(results)
-results$significant <- results$adj.P.Val < 0.05
+# A protein observed in only one group (or one batch level) has no estimable contrast: limma
+# returns NA, and `adj.P.Val < 0.05` would make every downstream sum() NA. Report those separately
+# as "undetected in group B" -- that is the honest statement, not a fold change.
+results$significant <- !is.na(results$adj.P.Val) & results$adj.P.Val < 0.05
 
 # === 7. OUTPUT ===
 cat('\nResults:\n')
+cat('  Contrast not estimable (report as undetected-in-group):', sum(is.na(results$logFC)), '\n')
 cat('  Significant proteins:', sum(results$significant), '\n')
 cat('  Up-regulated:', sum(results$significant & results$logFC > 0), '\n')
 cat('  Down-regulated:', sum(results$significant & results$logFC < 0), '\n')
@@ -199,9 +225,14 @@ write.csv(results, 'proteomics_results.csv', row.names = FALSE)
 ```r
 library(MSstats)
 
-# From MaxQuant
-evidence <- read.table('evidence.txt', sep = '\t', header = TRUE)
-proteinGroups <- read.table('proteinGroups.txt', sep = '\t', header = TRUE)
+# From MaxQuant. quote = '' and comment.char = '' are REQUIRED: MaxQuant text fields contain
+# apostrophes (5'-nucleotidase) and '#', and the read.table defaults silently truncate the table
+# with nothing but an 'EOF within quoted string' warning -- here 2954 of 10369 evidence rows and
+# 62 of 296 proteins. Check the row count; do not trust the warning to stop you.
+evidence <- read.table('evidence.txt', sep = '\t', header = TRUE, quote = '', comment.char = '')
+proteinGroups <- read.table('proteinGroups.txt', sep = '\t', header = TRUE, quote = '', comment.char = '')
+stopifnot(nrow(evidence) == length(readLines('evidence.txt')) - 1,
+          nrow(proteinGroups) == length(readLines('proteinGroups.txt')) - 1)
 annotation <- read.csv('annotation.csv')
 
 # Convert to MSstats format
@@ -243,10 +274,22 @@ library(MSnbase)
 raw <- readMSData('tmt.mzML', mode = 'onDisk')
 tmt_data <- quantify(raw, reporters = TMT10, method = 'max')
 # Correct isobaric impurity cross-talk with the LOT-SPECIFIC matrix from the reagent CoA.
-# edit=FALSE avoids the interactive editor (default edit=TRUE blocks in scripts); load the CoA
-# cross-talk values rather than the near-identity template makeImpuritiesMatrix(10) returns alone.
-impurities <- makeImpuritiesMatrix(filename = 'tmt10_coa.csv', edit = FALSE)
+# makeImpuritiesMatrix(x = 10, edit = FALSE) returns a MANUFACTURER TEMPLATE, not an identity
+# matrix -- its diagonal runs 0.928-0.965 and 5% of 126 lands in 127C. It is a shape check only;
+# the numbers are lot-specific. (edit = TRUE, the default, opens an editor and blocks in scripts.)
+# Do NOT use makeImpuritiesMatrix(filename = ...) for TMT10/TMTpro: it reads a CoA laid out by
+# Da OFFSET and places each column k POSITIONS away in the reporter list, which is only correct
+# for non-interleaved reagents (TMT6, iTRAQ). TMT10/TMTpro interleave N and C, so the +1 Da
+# neighbour of 126 is 127C -- TWO positions away -- and the filename route silently writes the
+# bleed into 127N instead. Build the matrix by CHANNEL NAME and hand it to purityCorrect:
+# tmt10_coa.csv: a square percentage matrix, rows = SOURCE reagent, columns = OBSERVED channel,
+# both labelled with the channel names (126, 127N, 127C, ...); diagonal = the lot's purity.
+coa <- as.matrix(read.csv('tmt10_coa.csv', row.names = 1, check.names = FALSE))
+stopifnot(nrow(coa) == ncol(coa), setequal(rownames(coa), reporterNames(TMT10)))
+coa <- coa[reporterNames(TMT10), reporterNames(TMT10)]   # force the quant's channel order
+impurities <- coa / 100                                  # CoA percentages -> fractions
 tmt_data <- purityCorrect(tmt_data, impurities)
+stopifnot(sum(exprs(tmt_data) < 0, na.rm = TRUE) == 0)         # negatives = transposed/mis-ordered matrix
 
 # Multi-batch TMT: do NOT concatenate plexes directly. Use MSstatsTMT, which applies the
 # reference-channel (IRS) bridge during summarization:
@@ -258,15 +301,29 @@ tmt_data <- purityCorrect(tmt_data, impurities)
 ### SILAC Workflow
 Caveat: heavy-Arg -> heavy-Pro metabolic conversion biases ratios for proline-containing peptides (under-counts the heavy channel), and labeling efficiency must be checked (residual light reads as down-regulation). Route to proteomics/quantification for the mechanics.
 ```r
-# SILAC ratios from MaxQuant
-silac <- read.delim('proteinGroups.txt')
+library(limma)
+
+# SILAC ratios from MaxQuant (quote/comment.char as in the MSstats block above)
+silac <- read.delim('proteinGroups.txt', quote = '', comment.char = '')
 ratio_cols <- grep('Ratio.H.L.normalized', colnames(silac), value = TRUE)
 
-# Log2 transform ratios
-silac_log2 <- log2(silac[, ratio_cols])
+# Log2 transform ratios. MaxQuant leaves NaN (and 0 for an absent channel) wherever it could not
+# form a ratio, so log2 produces NaN/-Inf; coerce every non-finite cell to NA before testing.
+silac_log2 <- log2(as.matrix(silac[, ratio_cols]))
+silac_log2[!is.finite(silac_log2)] <- NA
+rownames(silac_log2) <- silac$Majority.protein.IDs   # without this the result table has no identity
 
-# One-sample t-test against 0 (no change)
-results <- apply(silac_log2, 1, function(x) t.test(x, mu = 0)$p.value)
+# Keep proteins with >= 2 finite ratios. apply(t.test) over the raw matrix STOPS the whole script
+# with "not enough 'x' observations" on the first protein quantified in one replicate only.
+keep <- rowSums(!is.na(silac_log2)) >= 2
+cat('proteins tested:', sum(keep), 'of', nrow(silac_log2), '\n')
+
+# One-sample moderated test against log2 ratio 0 (no change): an intercept-only limma fit borrows
+# variance across proteins, which an unmoderated per-protein t-test at n = 3 cannot. Report the
+# BH-adjusted p-value -- a raw p-value per protein controls nothing across thousands of tests.
+fit <- eBayes(lmFit(silac_log2[keep, , drop = FALSE]), trend = TRUE, robust = TRUE)
+results <- topTable(fit, coef = 1, number = Inf, adjust.method = 'BH')
+# Proteins dropped by `keep` are an on/off presence table, not a fold change (quantification).
 ```
 
 ### DIA-NN Workflow
@@ -292,7 +349,14 @@ protein_matrix <- diann_filt %>%
     distinct() %>%
     pivot_wider(names_from = Run, values_from = PG.MaxLFQ)
 
-# PG.MaxLFQ path: log2-transform and go straight to limma (no re-normalization)
+# PG.MaxLFQ path: log2-transform and go straight to limma (no re-normalization). DIA-NN writes 0
+# for "not quantified in this run", so 0 -> NA FIRST: log2(0) is -Inf, and -Inf cells propagate
+# silently until eBayes stops with "missing value where TRUE/FALSE needed".
+m <- as.matrix(protein_matrix[, -1])
+rownames(m) <- protein_matrix$Protein.Group
+m[m == 0] <- NA
+log2_matrix <- log2(m)
+stopifnot(!any(is.infinite(log2_matrix)))
 ```
 
 ## Common Errors
@@ -306,6 +370,11 @@ protein_matrix <- diann_filt %>%
 | Anticonservative p-values | `removeBatchEffect` before testing | Put batch in the model (`~ batch + condition`); removeBatchEffect only for PCA |
 | Every ratio subtly wrong | Wrong intensity column (`Intensity` vs `LFQ intensity` vs `iBAQ`) | Pick the right column; convert 0 -> NaN before log2 |
 | Spurious DA that flips between conditions | Razor-peptide inference reassigns a shared peptide | Quantify at protein-group level or unique-peptides-only for sensitive comparisons |
+| `EOF within quoted string`; far fewer rows than the file has lines | default `read.table` quoting on MaxQuant tables with apostrophes (`5'-nucleotidase`) and `#` | `read.table(..., quote = '', comment.char = '')`, then check `nrow` against `readLines` |
+| `eBayes`/`lmFit`: `missing value where TRUE/FALSE needed` on a DIA-NN matrix | DIA-NN writes 0 for "not quantified"; `log2(0)` is `-Inf` | `m[m == 0] <- NA` before `log2`, then `stopifnot(!any(is.infinite(m)))` |
+| `t.test`: `not enough 'x' observations` partway through a SILAC run | a protein quantified in one replicate only | filter to >= 2 finite ratios; moderated one-sample limma; report BH-adjusted p, never raw |
+| Impurity correction makes adjacent TMT10 channels worse, not better | `makeImpuritiesMatrix(filename=)` places CoA Da-offsets by POSITION, but TMT10/TMTpro interleave N and C | build the matrix by channel name (rows = source reagent) and pass it straight to `purityCorrect` |
+| A 3x-low injection sails through the raw-distribution check | the check read `LFQ intensity`, which MaxLFQ already renormalized, and used a 50%-of-median ID rule | inspect the raw `Intensity.` columns; flag a >= 1 log2 load shift or an ID count > 3 MADs below the median |
 
 ## References
 

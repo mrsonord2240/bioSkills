@@ -40,7 +40,7 @@ Tell your AI agent what you want to do:
 ### 1. Data Import
 - Load proteinGroups.txt (MaxQuant) or report.parquet (DIA-NN 1.9+)
 - Filter contaminants, reverse, and only-identified-by-site BEFORE normalizing
-- Extract intensity columns (LFQ intensity, not raw Intensity, for between-sample work)
+- Extract intensity columns (LFQ intensity, not raw Intensity, for between-sample work) -- but inspect the raw `Intensity` columns for failed loads: MaxLFQ has already renormalized the LFQ columns, so a low injection is largely invisible there
 
 ### 2. Transformation
 - Replace 0 with NA
