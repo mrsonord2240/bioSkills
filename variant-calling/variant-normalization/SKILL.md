@@ -311,8 +311,14 @@ Duplicate removal options (`-d`):
 **Approach:** Apply the same three-step normalization pipeline to each VCF, then use set operations.
 
 ```bash
+set -o pipefail   # a REF mismatch aborts the last stage after writing a 0-record, non-BGZF
+                   # file; without pipefail the loop continues and `bcftools index` then fails
+                   # with "not BGZF compressed", hiding the real cause
 for vcf in gatk.vcf.gz freebayes.vcf.gz; do
     base=$(basename "$vcf" .vcf.gz)
+    # REF pre-check (see examples/normalize_vcf.sh for the full MISMATCH-count version)
+    bcftools norm -f reference.fa -c w "$vcf" -Ou 2>&1 >/dev/null | grep -q 'REF_MISMATCH\|does not match' && \
+        { echo "Error: $vcf has REF allele mismatches against reference.fa (wrong build or contig naming?)."; exit 1; }
     bcftools norm -m- "$vcf" | \
         bcftools norm --atomize | \
         bcftools norm -f reference.fa -Oz -o "${base}.norm.vcf.gz"
@@ -327,6 +333,12 @@ The `isec` output directories: `0000.vcf` = private to first file, `0001.vcf` = 
 ### Before Database Annotation
 
 ```bash
+set -o pipefail
+# REF pre-check: the pipeline's last stage aborts on a REF mismatch after writing a 0-record,
+# non-BGZF file; without this check the failure surfaces as `bcftools index` reporting
+# "not BGZF compressed", not the real REF mismatch (see examples/normalize_vcf.sh)
+bcftools norm -f reference.fa -c w variants.vcf.gz -Ou 2>&1 >/dev/null | grep -q 'REF_MISMATCH\|does not match' && \
+    { echo "Error: variants.vcf.gz has REF allele mismatches against reference.fa."; exit 1; }
 bcftools norm -m- variants.vcf.gz | \
     bcftools norm --atomize | \
     bcftools norm -f reference.fa -Oz -o for_annotation.vcf.gz
