@@ -94,7 +94,7 @@ Contamination shows up in VCF stats as a het allele-balance distribution shifted
 
 ```bash
 bcftools query -f '[%SAMPLE\t%GT\t%AD\n]' input.vcf.gz | \
-    awk -F'\t' '($2=="0/1" || $2=="0|1") {split($3,a,","); d=a[1]+a[2]; if (d>0) {s[$1]+=a[2]/d; n[$1]++}}
+    awk -F'\t' '($2 ~ /^(0[\/|]1|1\|0)$/) {split($3,a,","); d=a[1]+a[2]; if (d>0) {s[$1]+=a[2]/d; n[$1]++}}
         END {for (k in s) printf "%s\tmean het AB: %.3f (n=%d)\n", k, s[k]/n[k], n[k]}'   # expect ~0.5 per sample
 ```
 
