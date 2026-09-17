@@ -61,8 +61,11 @@ remotes::install_github(c('MRCIEU/TwoSampleMR',
 pip install pyfocus gentropy   # otargenpy is an alternative Open Targets GraphQL wrapper
 git clone https://github.com/hakyimlab/MetaXcan   # S-PrediXcan / S-MultiXcan
 git clone https://github.com/JonJala/mtag          # MTAG (Python 2.7)
-# LDSC python3 (abdenlab/ldsc-python3 = working CLI; belowlab v3.0.1 broke the --h2/--rg/--h2-cts CLI)
-git clone https://github.com/abdenlab/ldsc-python3 && cd ldsc-python3 && pip install .
+# LDSC python3: CBIIT/ldsc (abdenlab/ldsc-python3 and belowlab/ldsc crash on --h2/--rg; --h2-cts
+# needs a one-line patch, see heritability-partitioning)
+git clone https://github.com/CBIIT/ldsc.git && cd ldsc
+micromamba create -n ldsc -c conda-forge -c bioconda python=3.9 bitarray=2 pybedtools=0.10.0 -y
+micromamba run -n ldsc pip install numpy==1.21.5 pandas==1.3.3 scipy==1.7.3
 
 # CLI binaries (download from upstream)
 # - LDAK 6+ (dougspeed.com)
