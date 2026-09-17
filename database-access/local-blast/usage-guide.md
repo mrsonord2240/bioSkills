@@ -62,13 +62,10 @@ For large workflows (>100,000 queries), consider DIAMOND or MMseqs2 instead -- 1
 
 ## Tips
 
-- For very large database downloads, run `update_blastdb.pl --decompress` overnight; sizes can exceed 100 GB.
-- Soft masking (default) is correct for nearly all use cases; hard masking creates artificial mismatches at boundaries.
-- `pident` in `-outfmt 6` is identity over the HSP, not the query; use `qcovs` (total query coverage) for the "coverage" most people mean.
-- Build databases with `-blastdb_version 5` so `-taxids` works. v4 databases require the `taxonomy4blast.sqlite3` companion file and don't support `-taxidlist`.
-- For >100K query batches, DIAMOND (Buchfink 2021) and MMseqs2 (Steinegger 2017) are 100-10,000x faster at similar sensitivity. See `remote-homology`.
-- Reciprocal best hit (RBH) on a single forward + reverse search is the quick-and-dirty ortholog call but mis-pairs paralogs; for principled orthology use OrthoFinder or OMA -- see `ortholog-inference`.
-- The BLAST+ Bio.Blast.Applications wrappers were deprecated in BioPython 1.85; use plain `subprocess` for Python integration.
+See SKILL.md's "Database format: v5 vs v4" (taxonomy filtering prerequisites), "Soft vs hard masking",
+"Output format reference" (`pident` vs `qcovs`), "Thread scaling" (DIAMOND/MMseqs2 for >100K queries),
+"Code patterns" (RBH paralog caveat), and "Practice boundaries" for the details an agent needs --
+kept in one place there instead of restated here.
 
 ## Related Skills
 

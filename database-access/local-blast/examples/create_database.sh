@@ -33,7 +33,9 @@ echo "=== Optional: taxid-aware DB ==="
 echo "If your FASTA accessions have known taxids, build with a -taxid_map tsv (seqid<TAB>taxid):"
 echo "  makeblastdb -in seqs.fasta -dbtype nucl -blastdb_version 5 \\"
 echo "              -parse_seqids -taxid_map seqid_taxid.tsv -out taxid_db"
-echo "This enables blastn/blastp '-taxids 9606' and '-taxidlist file.txt' filtering."
+echo "-taxids/-taxidlist filtering also needs NCBI's taxdb.tar.gz in \$BLASTDB or the CWD --"
+echo "without it, blastp/blastn exit 0 and silently return UNFILTERED results. See SKILL.md's"
+echo "'Database format: v5 vs v4' section for the fetch command and how to detect the no-op."
 
 echo
 echo "=== Verify ==="
