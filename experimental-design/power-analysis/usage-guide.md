@@ -43,23 +43,6 @@ Tell your AI agent what you want to do:
 
 > "A reviewer says my study is underpowered because the observed power was 0.3. How should I respond?"
 
-## What the Agent Will Do
-
-1. Identify the assay and whether pilot data exist.
-2. Choose closed-form (RNASeqPower) for a quick number or simulation (PROPER/powsimR) for the reported figure.
-3. Report power as a function of replicate number at the target FDR, not a single transcriptome-wide value.
-4. Advise on the depth-versus-replicate allocation under budget constraints.
-5. Flag misuse of observed power and recommend effect-size/CI reporting instead.
-
-## Tips
-
-- Power is per-gene; report marginal power at a target FDR, not one number for the whole transcriptome.
-- Use simulation from the mean-dispersion trend for the reported figure; closed-form for a quick sanity check.
-- Estimate the coefficient of variation or dispersion from pilot data; a literature value can be off by a factor of two.
-- Past roughly 10-20 million mapped reads, add biological replicates rather than depth.
-- Power to the minimum biologically meaningful effect, never the pilot-observed effect.
-- Never use observed (post-hoc) power to interpret a non-significant result; report the confidence interval.
-
 ## Related Skills
 
 - sample-size - The inverse problem: minimum replicates for a target power at a target FDR
