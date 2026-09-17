@@ -58,15 +58,22 @@ cat('--- 4-Way Decomposition ---\n')
 summary(result_4way)
 
 ## Component meaning under rare-disease logistic 4-way decomposition (Valeri 2013).
-## CMAverse output column names (case-sensitive; verify with summary(result_4way)$results):
-##   Rcde   = controlled direct effect on OR scale (mediator fixed at mval)
-##   Rpnie  = pure natural indirect effect (mediator without interaction)
-##   intref = reference interaction term (interaction WITHOUT mediation)
-##   intmed = mediated interaction term (interaction AND mediation)
-##   Rte    = total OR
-##   pm     = proportion mediated; int, pe = proportion attributable to interaction
-## Component names differ between continuous outcome (cde/pnde/tnde/pnie/tnie) and
-## ratio scale (Rcde/Rpnde/Rtnde/Rpnie/Rtnie); inspect names(summary(result)$results).
+## CMAverse output column names (case-sensitive; verify with summary(result_4way)$summarydf,
+## NOT $results -- that element does not exist on the summary object):
+##   Rcde     = controlled direct effect on OR scale (mediator fixed at mval)
+##   Rpnie    = pure natural indirect effect on OR scale (mediator without interaction)
+##   ERintref = excess relative risk from interaction WITHOUT mediation
+##   ERintmed = excess relative risk from interaction AND mediation
+##   Rte      = total OR
+##   pm       = proportion mediated; int, pe = proportion attributable to interaction
+## NOTE: for a binary/logistic outcome with EMint=TRUE, the interaction terms are named
+## ERintref/ERintmed (ER = excess relative risk), NOT the bare intref/intmed -- those
+## belong only to the continuous-outcome case. Verified column set (CMAverse 0.1.0,
+## logistic outcome, EMint=TRUE, 2026-09-17):
+##   Rcde Rpnde Rtnde Rpnie Rtnie Rte ERcde ERintref ERintmed ERpnie
+##   ERcde(prop) ERintref(prop) ERintmed(prop) ERpnie(prop) pm int pe
+## Component names differ between continuous outcome (cde/pnde/tnde/pnie/tnie/intref/intmed)
+## and ratio scale (Rcde/.../ERintref/ERintmed above); inspect names(summary(result)$summarydf).
 
 ## --- Compare to standard (no-interaction) mediation ---
 med_simple <- lm(expression ~ genotype + age + sex + pc1 + pc2, data=dat)

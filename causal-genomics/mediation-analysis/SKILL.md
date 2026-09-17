@@ -8,7 +8,7 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: R 4.3+, mediation 4.5.0+, CMAverse 0.1.0+ (GitHub `BS1125/CMAverse`), HIMA >= 2.3.0 (GitHub `YinanZheng/HIMA`; archived from CRAN 2026-07), bama 1.3+, causalweight 1.0.5+ (medDML), MVMR 0.4+, TwoSampleMR 0.6+, EValue 4.1+, gesttools 1.3+, ipw 1.0.11+.
+Reference examples tested with: R 4.3+, mediation 4.5.0+, CMAverse 0.1.0+ (GitHub `BS1125/CMAverse`), HIMA >= 2.3.0 (CRAN; checked on HIMA 2.3.4), bama 1.3+, causalweight 1.0.5+ (medDML), MVMR 0.4+, TwoSampleMR 0.6+, EValue 4.1+, gesttools 1.3+, ipw 1.0.11+.
 
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
@@ -28,6 +28,12 @@ If code throws an error, introspect the installed package (`?hima`, `args(cmest)
 - R (doubly-robust double-ML): `causalweight::medDML(y, d, m, x)`
 
 Sequential ignorability (no unmeasured confounder of treatment-mediator, mediator-outcome, treatment-outcome) is the single load-bearing assumption of observational mediation and is fundamentally untestable. Every report should include a sensitivity result (Imai's rho via `medsens()` or a mediational E-value).
+
+## Scope
+
+ACME/CDE/PIE/indirect-effect estimates are population-level causal-inference quantities from a fitted model or GWAS under an assumed DAG. They do not license an individual patient's treatment decision -- decline requests to turn a population-level mediation result into an individual dosing or treatment recommendation, and redirect to the treating clinician, who has clinical context this Skill does not.
+
+Individual-level genotype, expression and methylation data used as mediators are PHI-adjacent. De-identify before analysis, and avoid echoing raw per-subject values in error messages, logs or intermediate output.
 
 ## Algorithmic Taxonomy
 
@@ -69,7 +75,7 @@ Without an exposure-mediator interaction term, INTref = INTmed = 0 and the decom
 | Scenario | Recommended pipeline |
 |----------|---------------------|
 | Observational, single measured mediator, no plausible E-M interaction, continuous outcome | `mediation::mediate()` with `boot=TRUE, sims=5000`; always run `medsens()` |
-| Observational, single mediator, suspected E-M interaction, any outcome family | `CMAverse::cmest(..., EMint=TRUE)` -> read CDE, PIE, INTref, INTmed |
+| Observational, single mediator, suspected E-M interaction, any outcome family | `CMAverse::cmest(..., EMint=TRUE)` -> read `cde`/`intref`/`intmed`/`pnie` (continuous outcome) or `ERcde`/`ERintref`/`ERintmed`/`ERpnie` (ratio-scale, e.g. logistic/Cox); verify with `summary(result)$summarydf` |
 | Observational, BINARY outcome, rare disease (< 10%) | `cmest(yreg='logistic', EMint=TRUE, casecontrol=FALSE)` -- OR-based 4-way decomposition is valid under rare-disease |
 | Observational, survival outcome | `cmest(yreg='coxph')` OR `HIMA::hima_cox` for high-D; report HRs |
 | High-D mediators (EWAS, transcriptome-wide), continuous outcome | `HIMA::hima(formula, data.pheno, data.M, mediator.type='gaussian', penalty='DBlasso')`; report `sigcut` (FDR threshold, default 0.05) |
@@ -122,17 +128,19 @@ For high-stakes claims (clinical, drug-target, regulatory submissions) report BO
 
 ### HIMA covariate or data.pheno error
 
-**Trigger:** `data.pheno` contains factor columns with NA, or formula references columns missing from `data.pheno`.
+**Trigger:** `data.pheno` contains factor/character columns with NA, or formula references columns missing from `data.pheno`.
 
-**Mechanism:** HIMA v2.3+ uses a formula interface and constructs the design matrix internally from `data.pheno`; missing values or unparseable formulas surface as cryptic `glmnet` errors.
+**Mechanism:** HIMA v2.3+ uses a formula interface and constructs the design matrix internally from `data.pheno` via `hima_dblasso`'s `process_var()`, which requires every covariate to already be numeric or dummy-coded -- **not** an R `factor`. Passing a `factor` column throws `Non-numeric variable(s) detected... Please convert all factor/character variables to numeric or dummy variables` (verified on HIMA 2.3.4, 2026-09-17); separately, missing values or unparseable formulas surface as cryptic `glmnet`/`storage.mode` errors.
 
-**Symptom:** Pipeline fails inside `hima()` with a non-obvious `storage.mode` or `model.matrix` error.
+**Symptom:** Pipeline fails inside `hima()` with a non-obvious `storage.mode`/`model.matrix` error, or -- if `factor()` was tried as the fix -- with `process_var()`'s "Non-numeric variable(s) detected" error.
 
-**Fix:** Pre-clean `data.pheno` (drop NA rows for the variables in the formula; convert factors with `factor()`; ensure all RHS variables exist as columns). Example:
+**Fix:** Pre-clean `data.pheno` (drop NA rows for the variables in the formula; ensure all RHS variables exist as columns) and **dummy-code categorical covariates with `model.matrix()`, not `factor()`** -- HIMA 2.3.4 rejects factor columns outright. Example (verified: recovers planted mediators with a 3-level `batch` covariate):
 ```r
 dat <- na.omit(dat[, c('outcome', 'exposure', 'age', 'sex', 'batch', 'pc1', 'pc2')])
-dat$batch <- factor(dat$batch)
-result <- hima(outcome ~ exposure + age + sex + batch + pc1 + pc2,
+batch_dummy <- model.matrix(~ batch, data=dat)[, -1, drop=FALSE]  # drop the intercept column
+dat <- cbind(dat[, setdiff(names(dat), 'batch')], batch_dummy)     # e.g. adds batchB, batchC
+result <- hima(as.formula(paste('outcome ~ exposure + age + sex +',
+                                 paste(colnames(batch_dummy), collapse=' + '), '+ pc1 + pc2')),
                data.pheno=dat, data.M=M_matrix, mediator.type='gaussian')
 ```
 
@@ -260,7 +268,7 @@ summary(sens)
 
 ### 4-Way Decomposition with Exposure-Mediator Interaction
 
-**Goal:** Separate CDE, PIE, INTref, INTmed when exposure-mediator interaction is biologically plausible (e.g., gene-environment interaction modifying mediator effect).
+**Goal:** Separate CDE, PIE, INTref, INTmed (continuous outcome) -- or their excess-relative-risk equivalents ERcde/ERpnie/ERintref/ERintmed (binary/survival outcome, shown below) -- when exposure-mediator interaction is biologically plausible (e.g., gene-environment interaction modifying mediator effect).
 
 **Approach:** Use CMAverse regression-based estimator with `EMint=TRUE`; bootstrap CIs.
 
@@ -279,7 +287,7 @@ result_4way <- cmest(
 summary(result_4way)
 ```
 
-CMAverse reports the 4-way decomposition (Vanderweele 2014): for continuous outcomes the components are `cde`, `intref`, `intmed`, `pnie` (or `pie`), `te`, `pm`; for non-continuous outcomes (logistic / Cox / Poisson) the ratio versions `Rcde`, `Rpnde`, `Rtnde`, `Rpnie`, `Rtnie` are reported. When `EMint=TRUE`, additional proportion-attributable-to-interaction terms (`int`, `pe`) are included. Verify column names with `summary(result)$results` in the installed CMAverse version, since naming has evolved.
+CMAverse reports the 4-way decomposition (Vanderweele 2014): for continuous outcomes the components are `cde`, `intref`, `intmed`, `pnie` (or `pie`), `te`, `pm`; for non-continuous outcomes (logistic / Cox / Poisson) the ratio effects `Rcde`, `Rpnde`, `Rtnde`, `Rpnie`, `Rtnie`, `Rte` are reported ALONGSIDE an excess-relative-risk decomposition with an `ER` prefix -- `ERcde`, `ERintref`, `ERintmed`, `ERpnie` (plus a `(prop)` share for each) -- **not** the bare `intref`/`intmed` names, which belong only to the continuous-outcome case. When `EMint=TRUE`, `pm`, `int`, `pe` are also included. Verified column set on a logistic-outcome, `EMint=TRUE` fit (CMAverse 0.1.0, 2026-09-17): `Rcde Rpnde Rtnde Rpnie Rtnie Rte ERcde ERintref ERintmed ERpnie ERcde(prop) ERintref(prop) ERintmed(prop) ERpnie(prop) pm int pe`. Verify column names in the installed CMAverse version with `summary(result)$summarydf` (not `$results`, which does not exist on the summary object), since naming has evolved.
 
 ### High-Dimensional EWAS Mediation (HIMA2)
 
@@ -303,7 +311,11 @@ result <- hima(
   sigcut=0.05,
   parallel=TRUE, ncore=8, verbose=TRUE
 )
-# result is a data.frame of significant mediators below sigcut
+# result is a LIST of class "hima" ($ID, $alpha, $beta, `$alpha*beta`, $rimp, `$p-value`),
+# NOT a data.frame -- nrow(result) and rownames(result) both return NULL rather than
+# erroring (verified on HIMA 2.3.4). Use result$ID and length(result$ID):
+sig_mediators <- result$ID
+n_sig <- length(sig_mediators)
 ```
 
 For survival outcomes wrap the LHS as `Surv(time, status)`; HIMA auto-routes to Cox. The old `hima_classic()` (Zhang 2016 original) is still exported but screens by beta only and misses mediators with strong alpha + weak beta -- prefer the wrapper `hima()` unless reproducing a 2016-2021 paper.
@@ -415,7 +427,7 @@ For binary outcomes, convert ACME on probability scale to RR; for continuous, us
 |---------|--------|-------|
 | mediation | CRAN | `install.packages('mediation')`; actively maintained (Imai group) |
 | CMAverse | GitHub | `remotes::install_github('BS1125/CMAverse')`; NOT on CRAN; 6 estimators in one interface |
-| HIMA | GitHub | `remotes::install_github('YinanZheng/HIMA')`; archived from CRAN 2026-07 (needs archived `scalreg`); v2.x renamed `hima()` to HIMA2 -- verify with `?hima` |
+| HIMA | CRAN | `BiocManager::install('qvalue')` then `install.packages('HIMA')`; back on CRAN with a lighter dependency list (`ncvreg`, `glmnet`, Bioconductor `qvalue`), no `scalreg` needed; confirmed on HIMA 2.3.4 (checked 2026-09-17) |
 | bama | CRAN | `install.packages('bama')`; Bayesian; slow MCMC |
 | causalweight | CRAN | `install.packages('causalweight')`; medDML for double-ML mediation |
 | EValue | CRAN | `install.packages('EValue')`; for mediational E-values |
@@ -434,6 +446,7 @@ For binary outcomes, convert ACME on probability scale to RR; for continuous, us
 | CMAverse `cmest()` reports NaN for `pm` | Total effect crosses zero -> proportion ill-defined | Report ACME and TE separately; pm is unstable when |TE| is small |
 | Different ACME between `mediation` and CMAverse `rb` | Default `astar/a` levels differ; binary mediator handled differently | Set `astar=0, a=1` explicitly; for binary mediator pass `mval=list(0)` |
 | HIMA returns zero significant mediators | Screening too aggressive; or no true mediators | Try `topN=2*sqrt(n)` instead of default; verify with permutation null |
+| `nrow(result)`/`rownames(result)` is `NULL` after `hima()` (no error thrown) | `hima()` returns a list of class `"hima"`, not a data.frame; these accessors fail silently | Use `result$ID` (mediator names), `length(result$ID)` (count); index `result$alpha`, `result$beta`, `result$rimp` the same way |
 | Two-step MR shows indirect > total | Steiger reversal: M actually causes E; or pleiotropic SNPs | Run MR-Steiger filter; use MR-PRESSO for pleiotropy |
 | `medDML` trim removes most data | Severe positivity violation -- few units with overlapping treatment/mediator distributions | Tighten covariate set; check propensity score distributions |
 
