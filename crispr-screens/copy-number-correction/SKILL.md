@@ -127,8 +127,13 @@ from chronos.hit_calling import get_probability_dependent
 #                  timepoint needs a pDNA row in the same library.
 # 3. guide_gene_map  columns sgrna, gene; one gene per sgRNA (duplicated sgRNAs are rejected).
 # 4. negative_control_sgrnas  dict library -> sgRNAs of non-targeting or known non-essential
-#                  genes. Optional in the signature only: without it, train() dies with
-#                  UnboundLocalError ('prior_variance') inside _estimate_excess_variance.
+#                  genes. Optional in the signature only: without it, chronos.Chronos(...)
+#                  construction itself raises ValueError('excess_variance was passed as dict
+#                  without key for <library>: {}') -- before train() is ever called. An
+#                  UnboundLocalError for 'prior_variance' does occur one frame deeper, inside
+#                  _estimate_excess_variance, but Chronos catches it internally and re-raises
+#                  the ValueError above every time; it never reaches the caller under default
+#                  arguments (checked on Chronos 2.3.15).
 # 5. Copy-number profile: cell lines x genes, applied AFTER training (see below).
 
 chronos.check_inputs(                      # fail fast on schema and orientation
@@ -172,7 +177,7 @@ gene_probabilities = get_probability_dependent(gene_effects_cn, negative_control
 import pandas as pd
 from scipy.stats import spearmanr, mannwhitneyu
 
-def detect_cn_bias(gene_lfc_df, cn_df, amplified_cn=4, diploid_cn=(1.5, 2.5)):
+def detect_cn_bias(gene_lfc_df, cn_df, amplified_cn=4, diploid_cn=(1.5, 2.5), low_power_n=8):
     '''Test whether amplified genes are depleted relative to diploid ones.
 
     The genome-wide Spearman rho alone is not enough: a real focal amplicon covers a handful of
@@ -180,6 +185,16 @@ def detect_cn_bias(gene_lfc_df, cn_df, amplified_cn=4, diploid_cn=(1.5, 2.5)):
     real HAP1 screen with a planted 8-gene 17q12 amplicon at CN 15, rho was -0.034 (not
     "biased") while amplified genes averaged LFC -2.64 against -0.18 for diploid genes. Report
     the stratified gap, and treat either signal as bias.
+
+    n_amplified>=3 is only the floor for the Mann-Whitney test to run at all, not a guarantee it
+    has power to detect a real effect. On the real HT-29 FAM84B/MYC/POU5F1B block (CN=8)
+    post-CRISPRcleanR, the residual gap was still -0.98 logFC (MYC itself was left uncorrected;
+    its two flanking genes were), but n=3 gave p=0.208 -- bias_present reads False even though
+    the bias is real and substantial. Bootstrapping that same real 3-gene mixture at larger n
+    shows why: P(p<0.01) is only ~0.04 at n=3, ~0.13 at n=8, ~0.30 at n=15 -- the test needs
+    dozens of amplified genes at this effect size before it reliably clears its own threshold.
+    Below `low_power_n` amplified genes, do not read bias_present=False as "correction
+    succeeded" -- check `suspicious_despite_ns` and the raw `amplified_vs_diploid_gap` instead.
     '''
     merged = gene_lfc_df.merge(cn_df, on='gene')
     rho, p = spearmanr(merged['copy_number'], merged['lfc'])
@@ -189,6 +204,7 @@ def detect_cn_bias(gene_lfc_df, cn_df, amplified_cn=4, diploid_cn=(1.5, 2.5)):
     if len(amplified) >= 3 and len(diploid) >= 3:
         gap = amplified.mean() - diploid.mean()
         p_gap = mannwhitneyu(amplified, diploid, alternative='less').pvalue
+    low_power = len(amplified) < low_power_n
     return {
         'cn_lfc_rho': rho,
         'p_value': p,
@@ -198,11 +214,23 @@ def detect_cn_bias(gene_lfc_df, cn_df, amplified_cn=4, diploid_cn=(1.5, 2.5)):
         'amplified_vs_diploid_gap': gap,          # negative = amplified genes more depleted
         'p_amplified_more_depleted': p_gap,
         'bias_present': bool((rho < -0.1 and p < 0.01) or (gap < -0.5 and p_gap < 0.01)),
+        'low_power_floor': bool(low_power),        # test ran, but underpowered below low_power_n
+        'suspicious_despite_ns': bool(low_power and not pd.isna(gap) and gap < -0.5),
     }
 ```
 
 Run it once genome-wide and once per candidate amplicon (pass only that region's genes plus the
 diploid background), because a single amplicon is invisible in the genome-wide statistic.
+
+**Power caveat:** most candidate amplicons have only 3-10 member genes, and `n>=3` is the floor
+for the focal Mann-Whitney test to run at all -- not a guarantee it can detect a real effect at
+that size (`low_power_floor: true` in the output below `low_power_n=8`). Re-running this exact
+function on real post-CRISPRcleanR HT-29 data at a true 3-gene amplicon block gave
+`bias_present: False` (p=0.208) for a residual gap of -0.98 logFC units that was, in fact, still
+substantial. Below `low_power_n` amplified genes, do not treat `bias_present: False` as proof
+the correction worked; check `suspicious_despite_ns` and the raw `amplified_vs_diploid_gap`
+instead, and treat anything below -0.5 as still suspicious even when `p_amplified_more_depleted`
+is not significant.
 
 **Threshold (operational convention):** Spearman ρ <-0.10 between LFC and CN indicates genome-wide CN bias, and an amplified-vs-diploid LFC gap below -0.5 with a significant one-sided test indicates focal bias the correlation misses. Either one means correct before hit calling. Run this diagnostic before AND after correction.
 
@@ -214,6 +242,7 @@ If post-CRISPRcleanR or post-Chronos the CN-LFC Spearman is still significantly 
 2. **CRISPRcleanR position-based correction missed it:** The amplification is small relative to the segmentation algorithm's resolution. Use Chronos with matched CN profile.
 3. **Genomic rearrangement creates a "ghost" amplification:** A complex rearrangement appears as normal CN but Cas9 cuts at multiple sites due to translocation breakpoints. Combine WGS structural variants with the analysis.
 4. **Cell line has an unusually strong cut-toxicity response:** The artifact may persist; use CRISPRi screens for that line.
+5. **`alternate_CN` fits one CN-effect curve across the whole panel:** it is a fitted average, not a per-line correction, so a single extreme-CN line can retain residual signal even after correction. On a real 3-line CN dose-response panel (CN=2/8/15), the CN=15 line's amplicon genes moved from -1.92 to only -1.20 -- still essential-looking -- while the essentials stayed untouched. Re-run `detect_cn_bias` per cell line, not only pooled, after `alternate_CN`.
 
 ## Apply CN Correction to Pipeline
 
@@ -305,6 +334,7 @@ See [[library-design]] for CRISPRi (Dolcetto) and CRISPRa (Calabrese) library op
 | Cell-line CN profile resolution | ≥SNP-array level | Below this, CRISPRcleanR unsupervised |
 | Cell lines needed for `chronos.alternate_CN` | ≥3 | Chronos 2.3.15 raises RuntimeError below this |
 | Amplified-vs-diploid LFC gap | < -0.5 -> focal bias present | Catches single amplicons the genome-wide rho misses |
+| `detect_cn_bias` low-power floor | <8 amplified genes -> distrust `bias_present: False` | Real HT-29 3-gene block: p=0.208 for a genuine -0.98 gap |
 
 ## Common Errors
 
@@ -312,7 +342,7 @@ See [[library-design]] for CRISPRi (Dolcetto) and CRISPRa (Calabrese) library op
 |-----------------|-------|----------|
 | `RuntimeError: Correct for CN should not be used with fewer than 3 cell lines` | `alternate_CN` needs a panel | CN-correct with CRISPRcleanR instead; Chronos can still score the screen |
 | `AssertionError: ... Is your data transposed?` | readcounts passed as guides x samples | Transpose: rows = sequence_ID, columns = sgRNA |
-| `UnboundLocalError: ... 'prior_variance'` during `train()` | `negative_control_sgrnas` not supplied | Pass a dict of non-targeting/non-essential sgRNAs per library |
+| `ValueError: excess_variance was passed as dict without key for '<library>': {}` at `chronos.Chronos(...)` construction (not `train()`) | `negative_control_sgrnas` not supplied | Pass a dict of non-targeting/non-essential sgRNAs per library |
 | CRISPRcleanR removes a known essential | Segment-based over-correction | Manually inspect segments; cross-check with non-corrected |
 | Spearman ρ still -0.15 after correction | Method too coarse for the amp | Refine CN profile; use Chronos |
 | ERBB2 listed as essential in SK-BR-3 | Uncorrected HER2 amplification | Always apply correction before hit calling |
