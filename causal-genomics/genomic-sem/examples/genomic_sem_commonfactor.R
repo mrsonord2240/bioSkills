@@ -1,4 +1,6 @@
-# Reference: GenomicSEM 0.0.5+, lavaan 0.6+, MTAG 1.0+ | Verify API if version differs
+# Reference: GenomicSEM 0.0.5 + lavaan 0.6.19 (pinned -- lavaan >=0.7.0 crashes
+# commonfactor()/usermodel()/commonfactorGWAS() below with "object 'ReorderModel' not
+# found"; see SKILL.md Version Compatibility), MTAG 1.0+ | Verify API if version differs
 #
 # Common-factor model + common-factor GWAS with Q_SNP heterogeneity (Grotzinger 2019).
 # Produces:
@@ -11,6 +13,14 @@
 library(GenomicSEM)
 library(lavaan)
 library(Matrix)
+
+if (packageVersion('lavaan') >= '0.7.0') {
+    warning("lavaan >= 0.7.0 detected (", as.character(packageVersion('lavaan')),
+            "); commonfactor()/usermodel()/commonfactorGWAS() below will crash with ",
+            "\"object 'ReorderModel' not found\" under GenomicSEM 0.0.5. Pin lavaan to ",
+            "0.6.19 (remotes::install_version('lavaan', version = '0.6-19')) -- see ",
+            "SKILL.md Version Compatibility.")
+}
 
 trait_files <- c(
     'data/trait1.sumstats.gz',

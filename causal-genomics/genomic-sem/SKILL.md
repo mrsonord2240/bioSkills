@@ -8,13 +8,19 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: GenomicSEM 0.0.5+ (GitHub `GenomicSEM/GenomicSEM`), lavaan 0.6-17+, LDSC v1.0.1+ (Python 3; prefer `abdenlab/ldsc-python3` v2.0.0 -- `belowlab/ldsc` v3.0.1 README states the CLI is broken; Docker `jtb114/ldsc:latest` is the belowlab fallback), baselineLD_v2.2 annotations (alkesgroup.broadinstitute.org/LDSCORE), MTAG 1.0.8+ (Python; `JonJala/mtag`), R 4.4+.
+Reference examples tested with: GenomicSEM 0.0.5 (GitHub `GenomicSEM/GenomicSEM`) + **lavaan 0.6.19 pinned** (see Tool Installation for the install command and why), LDSC v1.0.1+ (Python 3; abdenlab fork -- see Tool Installation), baselineLD_v2.2 annotations (alkesgroup.broadinstitute.org/LDSCORE), MTAG 1.0.8+ (Python; `JonJala/mtag`), R 4.4+.
+
+**lavaan is capped, not floored: use 0.6.19.** On lavaan >= 0.7.0, GenomicSEM 0.0.5's internal reorder-step `sem()` calls omit the `ordered = FALSE` that lavaan now requires for DWLS on continuous data, so `usermodel()`, `commonfactorGWAS()` and `userGWAS()` crash under both estimators, and no `estimation=` choice avoids it (symptoms in Common Errors). Upgrading GenomicSEM does not help: the calls are unchanged at GitHub HEAD `6b65ca5` (2026-08-26). GenomicSEM 0.0.5 + lavaan 0.6.19 runs all four core functions under DWLS and ML, recovering planted loadings and factor correlations on synthetic inputs.
 
 Before using code patterns, verify installed versions match. If versions differ:
-- R: `packageVersion('GenomicSEM')` then `?ldsc`, `?commonfactor`, `?usermodel`, `?commonfactorGWAS`
+- R: `packageVersion('GenomicSEM')`, `packageVersion('lavaan')` then `?ldsc`, `?commonfactor`, `?usermodel`, `?commonfactorGWAS`
 - Python (LDSC, MTAG): `<tool>.py -h` and inspect the source under `ldsc/` or `mtag/`
 
-GenomicSEM is GitHub-only (never on CRAN). If `ldsc()` or `usermodel()` throws an error about lavaan syntax or non-positive-definite covariance, introspect the installed API (`getMethod('ldsc')`) and adapt rather than retrying.
+GenomicSEM is GitHub-only (never on CRAN). If `ldsc()` or `usermodel()` throws an error about lavaan syntax or non-positive-definite covariance -- and it is not the lavaan-version crash above -- introspect the installed API (`getMethod('ldsc')`) and adapt rather than retrying.
+
+## Scope Boundary
+
+GenomicSEM models latent genetic architecture across GWAS summary statistics at the population level; it does not predict or diagnose outcomes for any individual. Decline and redirect individual-level polygenic-score / diagnostic requests (e.g. "does this patient's PGS mean they will develop the disorder?") to a qualified clinician or genetic counselor -- this Skill's output is never an individual risk estimate.
 
 # Genomic SEM
 
@@ -168,7 +174,8 @@ AIC / BIC are used for nested-model comparison (lower is better); only compare n
 ```r
 library(GenomicSEM)
 
-# Step 1: Munge sumstats (one-time; produces .sumstats.gz files)
+# Step 1: Munge sumstats (one-time; produces .sumstats.gz files). GenomicSEM::munge()
+# or LDSC's own munge_sumstats.py both work; either way, verify HapMap3-alignment first.
 files <- c('raw/trait1.txt', 'raw/trait2.txt', 'raw/trait3.txt')
 hm3 <- 'w_hm3.snplist'  # HapMap3 SNP list
 trait_names <- c('trait1', 'trait2', 'trait3')
@@ -409,6 +416,8 @@ Cluster runs of `commonfactorGWAS()` / `userGWAS()` should use `MPI=TRUE` when s
 
 | Error / symptom | Cause | Solution |
 |-----------------|-------|----------|
+| `usermodel()`/`commonfactorGWAS()`/`userGWAS()` error `object 'ReorderModel'` or `'ReorderModelnoSNP' not found` (both DWLS and ML) | lavaan >=0.7.0 requires `ordered=FALSE` for DWLS on continuous data; GenomicSEM 0.0.5 never supplies it (see Version Compatibility) | Pin lavaan to 0.6.19 (see Tool Installation); confirmed working under both estimators |
+| `commonfactor()` reports "failed to converge" but `traceback()` shows an underlying `object '...Results' not found` error | Same lavaan-version incompatibility above, mislabeled by GenomicSEM's tryCatch as non-convergence | Not a model-specification problem -- do not re-specify the model; pin lavaan to 0.6.19 |
 | `commonfactor()` complains "S not positive definite" | Genetic correlations near +/-1 among inputs | Drop redundant traits; verify rg < 0.95 pairwise |
 | Standardized loading > 1 | Heywood case; under-identification | Constrain residual variance >= 0; inspect S for collinearity |
 | Factor p-value reported, Q_SNP not reported | Default focus is on factor effect | Always report Q_SNP from `commonfactorGWAS` output |
@@ -439,8 +448,13 @@ Cluster runs of `commonfactorGWAS()` / `userGWAS()` should use `MPI=TRUE` when s
 # GenomicSEM is GitHub-only
 remotes::install_github('GenomicSEM/GenomicSEM')
 
+# Pin lavaan to 0.6.19 -- lavaan >=0.7.0 breaks usermodel()/commonfactorGWAS()/userGWAS()
+# (see Version Compatibility). install_github above may pull a newer lavaan as a dependency;
+# always run this line after it, and re-run it if packageVersion('lavaan') drifts to >=0.7.
+remotes::install_version('lavaan', version = '0.6-19')
+
 # Dependencies
-install.packages(c('lavaan', 'Matrix', 'gdata'))
+install.packages(c('Matrix', 'gdata'))
 
 # Optional companions
 remotes::install_github('MRCIEU/TwoSampleMR')  # for downstream MR using factor GWAS as exposure
@@ -481,7 +495,7 @@ Pre-downloaded reference files: `eur_w_ld_chr/`, `baselineLD_v2.2.*`, `w_hm3.snp
 
 ## Related Skills
 
-- causal-genomics/mendelian-randomization - Use factor-GWAS effect sizes as MR exposure
+- causal-genomics/mendelian-randomization - Use the Q_SNP-clean "factor-only" subset of factor-GWAS effect sizes (see Common-Factor GWAS with Q_SNP) as MR exposure
 - causal-genomics/genetic-correlation - Bivariate LDSC produces the off-diagonals of the S matrix; GenomicSEM is the multi-trait extension
 - causal-genomics/heritability-partitioning - LDSC and S-LDSC foundations for stratified GenomicSEM
 - causal-genomics/colocalization-analysis - Cross-trait colocalization at common-factor loci
