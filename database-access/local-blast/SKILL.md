@@ -23,7 +23,11 @@ If a flag is unrecognized or behavior changes, introspect with `-help` and adapt
 The biggest mistakes are (a) using `nt`/`nr` without realizing they're >250 GB and grow weekly, (b) not building with `-parse_seqids` and then being unable to extract hit sequences with `blastdbcmd`, (c) using default `blastn` for cross-species when `dc-megablast` is correct, and (d) thinking `-num_threads 32` will scale -- past ~16 threads BLAST is I/O bound.
 
 - CLI: `makeblastdb`, `blastn`/`blastp`, `blastdbcmd`, `update_blastdb.pl` (NCBI BLAST+)
-- Python: `subprocess` wrapper (preferred); `Bio.Blast.Applications` was deprecated and removed -- do not use
+- Python: `subprocess` wrapper (preferred); `Bio.Blast.Applications` was deprecated and removed in BioPython 1.85 -- do not use
+
+## Practice boundaries
+
+Local BLAST reports sequence similarity, not diagnosis. A percent-identity/e-value hit against a reference sequence is not, on its own, a disease diagnosis, a pathogenicity call, or a treatment recommendation -- those require curated clinical variant databases (e.g. ClinVar, ACMG criteria) and a qualified clinical genetics workflow. Report the technical match (accession, `pident`, `evalue`, `bitscore`) and stop there; route diagnostic or treatment questions to a clinical genetics service rather than answering them from a BLAST hit.
 
 ## Installation
 
@@ -44,16 +48,30 @@ update_blastdb.pl --showall pretty | head
 
 ## Database format: v5 vs v4
 
-NCBI introduced BLAST database v5 in BLAST+ 2.10 (2020). v5 includes taxonomy indexing directly in the database files, enabling `-taxids` and `-taxidlist` filtering without a companion file. v4 databases require `taxonomy4blast.sqlite3` to be present and discoverable.
+NCBI introduced BLAST database v5 in BLAST+ 2.10 (2020). v5 embeds per-sequence taxid assignment (via `-taxid`/`-taxid_map` at build time) directly in the database files; v4 has no per-sequence taxid support at all. **Neither format is self-sufficient for `-taxids`/`-taxidlist` filtering** -- both still need NCBI's `taxdb.tar.gz` (scientific-name lookup: `taxdb.bti`/`taxdb.btd`) present in `$BLASTDB` or the working directory, and `blastp`/`blastn` auto-fetch a further ~98 MB `taxonomy4blast.sqlite3` over the network on the first `-taxids`/`-taxidlist` call. Checked on NCBI BLAST+ 2.17.0+.
 
 | Feature | v4 | v5 |
 |---|---|---|
 | Default for prebuilt NCBI dbs | No (legacy) | Yes (since 2020) |
-| `-taxids`, `-taxidlist` support | No | Yes |
+| Per-sequence taxid at build time (`-taxid_map`) | No | Yes |
+| `-taxids`, `-taxidlist` support (with `taxdb.tar.gz` present) | No | Yes |
 | `blastdbcmd -taxids` | No | Yes |
 | New `-info` output fields | No | Yes |
 
 `update_blastdb.pl` downloads v5 by default. When building a database manually with `makeblastdb`, v5 format requires `-blastdb_version 5`. **Always pass `-blastdb_version 5` and `-parse_seqids` when building from scratch.**
+
+**Taxonomy filtering silently no-ops without `taxdb.tar.gz`.** A v5 DB built with `-taxid_map` alone is NOT enough for `-taxids`/`-taxidlist` to actually filter. Without `taxdb.tar.gz` in `$BLASTDB` or the CWD, `blastp`/`blastn` print `The -taxids command line option requires additional data files ...` to stderr but still **exit 0 and return the unfiltered hit set** -- verified on 2.17.0+: a `-taxidlist` restricted to one taxid returned both the matching and the non-matching hit, byte-identical to the unfiltered run, at exit code 0.
+
+```bash
+# Fetch once, into $BLASTDB or the working directory
+curl -O https://ftp.ncbi.nlm.nih.gov/blast/db/taxdb.tar.gz
+tar -xzf taxdb.tar.gz   # taxdb.bti, taxdb.btd
+
+# The first -taxids/-taxidlist call also auto-fetches ~98 MB taxonomy4blast.sqlite3
+# over the network -- expect a one-time delay, not a hang.
+```
+
+**Detect the no-op -- exit 0 does not mean it worked.** Compare row counts before and after filtering, or grep stderr for `requires additional data files`. If a `-taxidlist` search returns the same row count as the unfiltered search, the filter did not apply: fetch `taxdb.tar.gz` and rerun before trusting the result as filtered. (Verified: 2 unfiltered rows -> still 2 rows without `taxdb.tar.gz` -> 1 row, correctly excluding the non-matching taxid, once `taxdb.tar.gz` was present.)
 
 ## `makeblastdb` flag taxonomy
 
@@ -165,7 +183,7 @@ Sizes (approximate, 2026):
 - `nt`: ~250 GB
 - `nr`: ~300 GB
 
-For most use cases, `refseq_select_*` is the right starting point. `nt`/`nr` are storage-heavy and reproducibility-hostile.
+For most use cases, `refseq_select_*` is the right starting point. `nt`/`nr` are storage-heavy and reproducibility-hostile. Downloads past a few GB can take hours -- run large `update_blastdb.pl` pulls (`refseq_protein` and up) overnight rather than blocking on them interactively.
 
 ## Code patterns
 
@@ -263,6 +281,14 @@ blastp -query B.fa -db A_db -outfmt 6 -evalue 1e-5 -num_threads 8 \
 awk '!seen[$1]++ {print $1"\t"$2}' A_vs_B.tsv | sort > A_best
 awk '!seen[$1]++ {print $1"\t"$2}' B_vs_A.tsv | sort > B_best
 awk 'NR==FNR{a[$1]=$2; next} a[$2]==$1' A_best B_best > rbh.tsv
+
+# rbh.tsv columns are (B_accession, A_accession) -- column 1 came from B_best's query
+# column (the B-vs-A search), column 2 from its best-hit column (an A accession).
+# Extract both sides from the matching DB (requires -parse_seqids at build time):
+cut -f1 rbh.tsv | sort -u > rbh_B_accessions.txt
+cut -f2 rbh.tsv | sort -u > rbh_A_accessions.txt
+blastdbcmd -db B_db -entry_batch rbh_B_accessions.txt -out rbh_B_hits.fasta
+blastdbcmd -db A_db -entry_batch rbh_A_accessions.txt -out rbh_A_hits.fasta
 ```
 
 This works but does NOT handle paralog mis-pairs from gene duplication; for that use OrthoFinder or OMA (in `ortholog-inference`).
@@ -331,11 +357,11 @@ def parse_tabular(path):
 - **Symptom:** No speedup or slowdown.
 - **Fix:** Cap at 8-16; split FASTA and run parallel processes instead for very large batches.
 
-### v4 database, expecting v5 features
-- **Trigger:** Old prebuilt DB; `-taxids` flag returns "Taxonomy database not available".
-- **Mechanism:** v4 needs `taxonomy4blast.sqlite3` companion; v5 has taxonomy indexed in DB.
-- **Symptom:** Taxonomy filtering silently no-ops or errors.
-- **Fix:** Re-download with `update_blastdb.pl --decompress` (gets v5); or use v5 explicitly when building.
+### Taxonomy filter no-op (v4 DB, or v5 DB missing `taxdb.tar.gz`)
+- **Trigger:** `-taxids`/`-taxidlist` on a v4 DB, or on a v5 DB before `taxdb.tar.gz` has been fetched into `$BLASTDB`/CWD.
+- **Mechanism:** v4 has no per-sequence taxid support at all. v5 embeds the taxid assignment but still needs `taxdb.tar.gz` for name lookup, plus an auto-fetched `taxonomy4blast.sqlite3` on first use -- without both, the filter cannot run.
+- **Symptom:** `requires additional data files` printed to stderr, but `blastp`/`blastn` exit 0 and return the full, unfiltered hit set -- easy to miss.
+- **Fix:** Rebuild as v5 with `-taxid`/`-taxid_map` if still on v4; either way, fetch `taxdb.tar.gz` into `$BLASTDB` or the CWD before trusting a filtered result (see Database format section). Confirm by row count, not exit code.
 
 ### Soft-masking confusion
 - **Trigger:** Hard-masking input (replacing repeats with N or X) instead of using `-dust`/`-seg`.
@@ -355,11 +381,12 @@ def parse_tabular(path):
 |---|---|---|
 | `BLAST Database error` | DB path wrong, or alias missing | `blastdbcmd -db <db> -info` to confirm |
 | `Error: entry not found` | Built without `-parse_seqids` | Rebuild |
-| Taxonomy filter no-op | v4 DB | Upgrade to v5 |
+| Taxonomy filter no-op (exit 0, unfiltered rows) | v4 DB, or v5 DB missing `taxdb.tar.gz` | v4: rebuild as v5. Either way: fetch `taxdb.tar.gz` into `$BLASTDB`/CWD -- exit 0 does not mean it filtered; check row counts |
 | Threads >16 not faster | I/O bound | Split input + parallel invocations |
 | `nt` download fills disk | Database is huge | Use refseq_select |
 | `Sequence too short` | Query < word_size | Use `-task blastn-short` (word=7) |
 | Out of memory | Single large query | Reduce `-num_threads`, split query |
+| Diffing raw `-out` file against an awk/sort-derived file shows spurious differences | Native BLAST `-out` files use CRLF on Windows; shell pipelines emit LF | Normalize with `tr -d '\r'` before diffing or scripting against a raw `-out` file |
 
 ## References
 
