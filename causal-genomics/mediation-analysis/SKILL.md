@@ -401,9 +401,16 @@ result_dml <- medDML(
   x=as.matrix(dat[, covariates]),
   trim=0.05, order=1
 )
+# result_dml is a list of class "list" ($results, $ntrimmed) -- NOT a data.frame.
+# $results is a 3x6 matrix: rows "effect"/"se"/"p-val" x columns
+# total, dir.treat, dir.control, indir.treat, indir.control, Y(0,M(0))
+# (verified on causalweight 1.1.4, 2026-09-17). Extract by name, not position:
+total_effect <- result_dml$results['effect', 'total']
+indirect_treat <- result_dml$results['effect', 'indir.treat']
+indirect_control <- result_dml$results['effect', 'indir.control']
 ```
 
-Reports direct, indirect (via mediator), and total effects with influence-function-based standard errors. Robust to non-linearity and interactions; assumes sequential ignorability still.
+Reports direct (`dir.treat`/`dir.control`), indirect (`indir.treat`/`indir.control`, via mediator), and total effects with influence-function-based standard errors, plus `Y(0,M(0))` (baseline counterfactual mean). `dir.treat`/`indir.treat` and `dir.control`/`indir.control` are the effects evaluated with the mediator's treatment/control-arm distribution respectively (Farbmacher 2022's doubly-robust decomposition, analogous to `mediation::mediate()`'s treated/control ACME). Robust to non-linearity and interactions; assumes sequential ignorability still.
 
 ### Mediational E-Value for Sensitivity
 
@@ -449,6 +456,7 @@ For binary outcomes, convert ACME on probability scale to RR; for continuous, us
 | `nrow(result)`/`rownames(result)` is `NULL` after `hima()` (no error thrown) | `hima()` returns a list of class `"hima"`, not a data.frame; these accessors fail silently | Use `result$ID` (mediator names), `length(result$ID)` (count); index `result$alpha`, `result$beta`, `result$rimp` the same way |
 | Two-step MR shows indirect > total | Steiger reversal: M actually causes E; or pleiotropic SNPs | Run MR-Steiger filter; use MR-PRESSO for pleiotropy |
 | `medDML` trim removes most data | Severe positivity violation -- few units with overlapping treatment/mediator distributions | Tighten covariate set; check propensity score distributions |
+| `medDML` fails with `Error ... subscript out of bounds` | Internal cross-fitted Lasso step (`hdm::rlassologit`) needs a covariate matrix with named columns and enough independent variation; too-few observations or near-collinear/unnamed `x` columns break it (verified: n=150, 2 unnamed near-collinear columns crashes; n=800 with named `age`/`sex`/`bmi` columns converges cleanly, causalweight 1.1.4, 2026-09-17) | Use `x=as.matrix(dat[, covariates])` with named columns (not a bare `cbind()` of unnamed vectors), n >= ~500, and drop near-collinear covariates |
 
 ## References
 
