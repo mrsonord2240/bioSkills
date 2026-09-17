@@ -8,7 +8,9 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: isocor 2.2+, numpy 1.26+
+Install: `pip install isocor numpy` (Python, low/any-resolution) or `install.packages('accucor')` (R, high-resolution alternative).
+
+Reference examples tested with: isocor 2.2.4, numpy 1.26+; accucor 0.3.1.9000 (R).
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -70,6 +72,7 @@ corrector = isocor.mscorrectors.MetaboliteCorrectorFactory(
     tracer_purity=[0.01, 0.99])       # [unlabeled, labeled] per-position purity of the tracer
 
 # raw measured areas M+0..M+6 for a partially labeled glucose pool
+# wrap in try/except ValueError -- see Common Errors table below
 corrected_area, iso_fraction, residuum, mean_enrichment = corrector.correct(
     [50000., 8000., 12000., 3000., 1500., 6000., 25000.])
 # iso_fraction is the corrected MID; mean_enrichment is fractional enrichment
@@ -81,7 +84,13 @@ High-resolution Orbitrap data resolves 13C from 15N/2H by exact mass, enabling a
 library(accucor)
 # El-MAVEN / MAVEN isotopologue table; Resolution is the instrument resolving power
 corrected <- natural_abundance_correction(path = 'elmaven_export.xlsx',
-                                          resolution = 100000, purity = 0.99)
+                                          resolution = 100000, purity = 0.99,
+                                          output_base = 'path/to/your/output/dir/run1')
+# side effect: writes <output_base>_corrected.xlsx. output_base is optional in the function
+# signature but NOT safe to omit -- leaving it unset derives the output path from `path`
+# instead and writes there by default, which silently drops a file next to your input (or,
+# if `path` points into an installed package's own directory, INTO that package's folder).
+# Always set output_base to a directory you own; never write into a package's own folder.
 ```
 
 Pick the corrector by tracer count and resolution: IsoCor handles any tracer at any resolution; AccuCor (single tracer) and AccuCor2 (dual 13C-15N / 13C-2H) target high-res. Verify the chosen tool's current argument names before running -- both APIs drift across versions.
@@ -107,13 +116,20 @@ fractional_enrichment = np.sum(np.arange(len(mid)) * mid) / (len(mid) - 1)
 
 **Approach:** Sample labeling at several timepoints; isotopic steady state is reached when the MID stops changing (plateau). Only plateau MIDs license classical-MFA flux inference; a rising MID is kinetic data requiring INST-MFA.
 
+**Do not check only the last pair of timepoints.** A series can still be visibly decelerating
+(e.g. consecutive deltas of 0.08, 0.06, 0.01) yet pass a last-pair-only `<2%` check, because the
+final step alone happened to be small. Require the last several consecutive deltas to all be
+below threshold before calling plateau -- or, for a stronger check, fit a saturating-exponential
+curve to the full time course and read its asymptote (Cheah & Young 2018).
+
 ```python
 import numpy as np
 
 # fractional enrichment per timepoint (minutes) for one metabolite
 t = np.array([0, 5, 15, 30, 60, 120])
-fe = np.array([0.00, 0.18, 0.31, 0.39, 0.42, 0.43])
-reached_plateau = abs(fe[-1] - fe[-2]) < 0.02     # <2% change between last points = plateau
+fe = np.array([0.00, 0.18, 0.35, 0.365, 0.378, 0.39])
+deltas = np.abs(np.diff(fe))                              # change between EVERY consecutive pair
+reached_plateau = len(deltas) >= 3 and np.all(deltas[-3:] < 0.02)  # last 3 deltas, not just the final one
 # if not reached_plateau: the pool is still labeling -> use the full time course (INST-MFA), not one point
 ```
 
@@ -155,7 +171,7 @@ reached_plateau = abs(fe[-1] - fe[-2]) < 0.02     # <2% change between last poin
 |---|---|---|
 | 13C natural abundance ~1.07% | IUPAC isotopic composition | Sets the natural-abundance ladder corrected out of every MID |
 | Tracer purity ~99% per position | Vendor U-13C specs | Must be supplied to correction; compounds with atom count |
-| Isotopic-steady-state = <~2% MID change between timepoints | Convention | Below this, plateau reached; classical MFA licensed |
+| Isotopic-steady-state = <~2% MID change, sustained across the last 3+ consecutive intervals (not just the final pair) | Convention | Below this, plateau reached; classical MFA licensed |
 | Quench at -40 to -80 C aqueous organic | Quenching literature (convention) | Arrests metabolism fast enough for high-turnover pools |
 | INST-MFA when labeling is slow / pools large / autotrophic | Cheah & Young 2018 | Isotopic steady state is unreachable in time, so fit the transient |
 
@@ -168,7 +184,7 @@ reached_plateau = abs(fe[-1] - fe[-2]) < 0.02     # <2% change between last poin
 | M+n isotopologue under-reported | Tracer purity left at 1.0 | Set `tracer_purity` / `purity` to the measured value |
 | GC-MS MID still wrong after correction | Derivatization atoms (TMS/TBDMS Si, extra C) omitted | Provide the derivative formula to the corrector |
 | Flux estimates shift with sampling time | Isotopic steady state not reached | Use a time course + INST-MFA, not a single MID |
-| `ValueError` half-defined resolution in IsoCor | Gave `mz_of_resolution`/`charge` without `resolution` | Provide all high-res parameters together or none |
+| `ValueError: MetaboliteCorrectorFactory was unable to select a correction strategy. Please check your inputs.` | Gave `mz_of_resolution`/`charge` without `resolution` (or another incomplete/inconsistent set of high-res args) -- the real message is this generic one, it does not name the missing argument | Provide all high-res parameters together or none |
 
 ## References
 
@@ -179,9 +195,4 @@ reached_plateau = abs(fe[-1] - fe[-2]) < 0.02     # <2% change between last poin
 - Young JD. 2014. INCA: a computational platform for isotopically non-stationary metabolic flux analysis. *Bioinformatics* 30:1333-1335.
 - Antoniewicz MR. 2018. A guide to 13C metabolic flux analysis for the cancer biologist. *Experimental & Molecular Medicine* 50:1-13.
 
-## Related Skills
-
-- metabolomics/targeted-analysis - Absolute pool quantification and MRM/SRM mechanics
-- metabolomics/xcms-preprocessing - Upstream LC-MS feature detection
-- metabolomics/pathway-mapping - Pathway enrichment that interprets pools, not flux
-- systems-biology/flux-balance-analysis - Constraint-based predicted flux, distinct from empirical tracing
+Related Skills and when to route to them instead: see the Decision Tree above and the frontmatter `description` (also in usage-guide.md's Related Skills section).
