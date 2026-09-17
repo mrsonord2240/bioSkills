@@ -10,10 +10,13 @@ suppressMessages(library(biomaRt))
 ensembl <- useEnsembl(biomart = 'genes', dataset = 'hsapiens_gene_ensembl', version = 110)
 
 # Coordinate table for chr17 protein-coding genes
+# Note: 'biotype' is only a valid FILTER name on this schema; the attribute is
+# 'gene_biotype' (confirmed against the same Ensembl backend pybiomart queries --
+# see SKILL.md "Common attribute selectors").
 coord_df <- getBM(
     attributes = c('ensembl_gene_id', 'external_gene_name',
                    'chromosome_name', 'start_position', 'end_position',
-                   'strand', 'biotype'),
+                   'strand', 'gene_biotype'),
     filters = c('chromosome_name', 'biotype'),
     values = list('17', 'protein_coding'),
     mart = ensembl
