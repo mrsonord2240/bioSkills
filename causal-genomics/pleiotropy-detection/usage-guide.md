@@ -13,10 +13,7 @@ A complete sensitivity battery must include at least one CHP-aware method when L
 
 ## Operational Decision Flow
 
-1. Compute LDSC genetic correlation (see causal-genomics/genetic-correlation). If `|rg| > 0.3`, escalate to Step 3.
-2. Run the standard battery: IVW (random-effects if Cochran Q p < 0.05), MR-Egger with NOME I^2_GX check (SIMEX correct if 0.6 <= I^2_GX < 0.9), weighted median, weighted mode, MR-PRESSO at NbDistribution `>= 10000` for stringent reporting.
-3. If CHP plausible (rg > 0.3 OR PRESSO global p < 0.05 with > 50% outliers OR Egger/median/mode disagree by > 2 SE), run CAUSE (if `>= 100` sig SNPs) or LHC-MR; report ELPD delta + z + q + gamma.
-4. Triangulate with pre-MR Steiger filter, bidirectional MR, LCV gcp, and the LDSC rg report.
+See SKILL.md's "Operational Decision Flow (4 Steps)" for the full escalation logic (LDSC rg gate, standard battery, CHP escalation, triangulation). Not repeated here so the two files can't drift apart on a fix like the LCV field-name correction above.
 
 ## LCV gcp Interpretation
 
