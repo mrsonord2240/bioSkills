@@ -16,12 +16,31 @@ gene_end <-   50050000
 cis_window <- 500000  # 500 kb either side per Schmidt 2020 drug-target convention
 n_snps <- 40
 
+# Single shared causal variant with LD-tag decay, not independent per-SNP draws: coloc.abf's
+# model expects a locus where association strength peaks at one variant and decays with distance
+# in BOTH traits identically (real LD tagging). Drawing every SNP's exposure/outcome effect
+# independently (the old pattern) gives each SNP an equally strong, independently-noisy signal in
+# both traits -- coloc then can't tell which SNP is "the" causal one and spreads posterior mass
+# across PP.H1/PP.H3 instead of PP.H4, even when a true shared beta_XY was planted (audit Input 2:
+# PP.H4 = 0.197 despite a planted shared-variant effect of 0.5). Modelling explicit LD-tag decay
+# around one causal SNP fixes this; verified below to clear the Skill's own PP.H4 >= 0.7 bar.
+positions <- sample(seq(gene_start - cis_window, gene_end + cis_window, by = 100), n_snps)
+causal_idx <- which.min(abs(positions - (gene_start + gene_end) / 2))
+decay_bp <- 250000  # local LD decay scale: tag correlation ~ exp(-|distance| / decay_bp)
+r_tag <- exp(-abs(positions - positions[causal_idx]) / decay_bp)
+
+beta_causal_exp <- 0.28   # per-allele effect of the causal cis-pQTL on exposure (protein level)
+true_beta_xy <- 0.5       # true causal effect of exposure on outcome; coloc PP.H4 should confirm this
+
+beta_true_exp <- beta_causal_exp * r_tag
+se_exp <- runif(n_snps, 0.02, 0.04)
+
 cis_pqtl <- data.frame(
     SNP = paste0('rs', 1:n_snps),
     CHR = rep(1, n_snps),
-    POS = sample(seq(gene_start - cis_window, gene_end + cis_window, by = 100), n_snps),
-    BETA = rnorm(n_snps, 0.15, 0.05),
-    SE = runif(n_snps, 0.02, 0.04),
+    POS = positions,
+    BETA = beta_true_exp + rnorm(n_snps, 0, se_exp),
+    SE = se_exp,
     A1 = sample(c('A', 'C', 'G', 'T'), n_snps, replace = TRUE),
     A2 = sample(c('A', 'C', 'G', 'T'), n_snps, replace = TRUE),
     EAF = runif(n_snps, 0.10, 0.90),
@@ -30,10 +49,16 @@ cis_pqtl <- data.frame(
 )
 cis_pqtl$P <- 2 * pnorm(-abs(cis_pqtl$BETA / cis_pqtl$SE))
 
+# Outcome signal = the same LD-tagged exposure signal scaled by the true causal beta_XY: this is
+# what makes both traits' association profiles peak at the same SNP (shared causal variant), the
+# pattern coloc.abf is calibrated to detect.
+beta_true_out <- beta_true_exp * true_beta_xy
+se_out <- runif(n_snps, 0.025, 0.05)
+
 outcome_assoc <- data.frame(
     SNP = cis_pqtl$SNP, CHR = cis_pqtl$CHR, POS = cis_pqtl$POS,
-    BETA = cis_pqtl$BETA * 0.5 + rnorm(n_snps, 0, 0.03),
-    SE = runif(n_snps, 0.025, 0.05),
+    BETA = beta_true_out + rnorm(n_snps, 0, se_out),
+    SE = se_out,
     A1 = cis_pqtl$A1, A2 = cis_pqtl$A2,
     EAF = cis_pqtl$EAF + rnorm(n_snps, 0, 0.02),
     N = rep(250000, n_snps),

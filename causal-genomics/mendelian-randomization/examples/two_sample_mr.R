@@ -98,6 +98,7 @@ cat('beta:', signif(raps$b, 3), '| se:', signif(raps$se, 3),
     '| p:', signif(raps$pval, 3), '\n')
 
 # MR-PRESSO: NbDistribution >= 10000 for publication-grade p-value precision (default 1000 is exploratory)
+set.seed(42)  # mr_presso()'s global/outlier tests are Monte-Carlo; seed for a reproducible p-value
 presso <- mr_presso(
     BetaOutcome = 'beta.outcome', BetaExposure = 'beta.exposure',
     SdOutcome = 'se.outcome', SdExposure = 'se.exposure',
@@ -105,10 +106,17 @@ presso <- mr_presso(
     data = dat, NbDistribution = 10000, SignifThreshold = 0.05
 )
 cat('\n--- MR-PRESSO ---\n')
+# MRPRESSO coerces Pvalue from numeric to a character string (e.g. "<2e-04") whenever the
+# empirical bootstrap p rounds to exactly 0 -- exactly what happens under strong real pleiotropy
+# (see MRPRESSO's own source: `ifelse(GlobalTest$Pvalue == 0, paste0("<", 1/NbDistribution), ...)`).
+# signif() on a character throws "non-numeric argument to mathematical function"; format defensively.
+presso_p <- presso$`MR-PRESSO results`$`Global Test`$Pvalue
+presso_p_fmt <- if (is.numeric(presso_p)) signif(presso_p, 3) else presso_p
 cat('Global RSSobs:', signif(presso$`MR-PRESSO results`$`Global Test`$RSSobs, 3),
-    '| p:', signif(presso$`MR-PRESSO results`$`Global Test`$Pvalue, 3), '\n')
+    '| p:', presso_p_fmt, '\n')
 if (!is.null(presso$`MR-PRESSO results`$`Distortion Test`)) {
-    cat('Distortion p:', signif(presso$`MR-PRESSO results`$`Distortion Test`$Pvalue, 3), '\n')
+    distortion_p <- presso$`MR-PRESSO results`$`Distortion Test`$Pvalue
+    cat('Distortion p:', if (is.numeric(distortion_p)) signif(distortion_p, 3) else distortion_p, '\n')
 }
 
 # Steiger directionality with Lutz 2022 confounder caveat: heuristic only, not definitive
