@@ -19,8 +19,14 @@ if (isq < 0.6) {
 } else if (isq < 0.9) {
     cat('NOME partially violated; applying SIMEX correction\n')
 
+    # Precompute the weights vector rather than dividing a data-frame column
+    # in-formula: simex() refits the model internally on perturbed data and
+    # cannot re-evaluate `1 / se.outcome^2` against its own working frame,
+    # which has no se.outcome column -- that in-formula form crashes with
+    # "object 'se.outcome' not found" inside simex()'s refit (simex 1.8).
+    w <- 1 / dat$se.outcome^2
     egger_lm <- lm(beta.outcome ~ beta.exposure,
-                   weights = 1 / se.outcome^2, data = dat,
+                   weights = w, data = dat,
                    x = TRUE, y = TRUE)
 
     egger_simex <- simex(model = egger_lm,

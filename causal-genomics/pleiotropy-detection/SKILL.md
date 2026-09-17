@@ -10,11 +10,24 @@ license: MIT
 
 Reference examples tested with: TwoSampleMR 0.5.11+, MendelianRandomization 0.9.0+, MR-PRESSO 1.0+, CAUSE 1.2.0+, MR-Clust 0.1.0+, MRMix 0.1+, mr.raps 0.4.1+ (GitHub), LHC-MR 0.0.0.9000+ (GitHub), LCV (script-based, no version tag), simex 1.8+.
 
+```r
+install.packages(c('remotes', 'TwoSampleMR', 'MendelianRandomization', 'simex'))
+remotes::install_github('rondolab/MR-PRESSO')          # CRAN-never; GitHub-only
+remotes::install_github('jean997/cause')               # CHP-aware (Morrison 2020)
+remotes::install_github('cnfoley/mrclust')             # Mechanism heterogeneity
+remotes::install_github('gqi/MRMix')                   # Mixture-of-distributions
+remotes::install_github('qingyuanzhao/mr.raps')        # CRAN-archived 2025-03; install from GitHub
+remotes::install_github('LizaDarrous/lhcMR')           # Heritable-confounder MR
+# LCV: git clone https://github.com/lukejoconnor/LCV (R scripts, no package)
+```
+
+Inputs are typically a harmonized TwoSampleMR data.frame (beta.exposure, beta.outcome, se.exposure, se.outcome, SNP, effect_allele, eaf, etc.). LHC-MR and LCV take genome-wide GWAS sumstats with LDSC-style merged SNPs; CAUSE takes pruned signature SNPs plus full sumstats for nuisance estimation.
+
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
 - For GitHub-only packages, check the repo HEAD vs the local install date
 
-If code throws errors, introspect the installed package and adapt the example rather than retrying.
+If code throws errors, introspect the installed package and adapt the example rather than retrying. For reproducibility, pin TwoSampleMR, MRPRESSO, and CAUSE versions in the methods section of any report, and record harmonization choices.
 
 # Pleiotropy Detection in Mendelian Randomization
 
@@ -24,6 +37,8 @@ If code throws errors, introspect the installed package and adapt the example ra
 - R: `MRPRESSO::mr_presso()` for UHP outlier removal + distortion test
 - R: `cause::cause()` for CHP-aware estimation; `mrclust::mr_clust_em()` for mechanism-heterogeneous instruments
 - R: `MendelianRandomization::mr_conmix()` for contamination mixture; `MRMix::MRMix()` for mixture-of-distributions
+
+**Practice boundary:** Every estimate this Skill produces is a population-average causal effect from GWAS summary statistics. It is research/epidemiological output, not a clinical tool. If a request turns a population MR result into an individual treatment or diagnostic decision ("should I personally start drug X"), decline the personal recommendation, name the population-vs-individual gap explicitly (baseline risk, comorbidities, and effect-modifier interactions a GWAS-derived average cannot capture), redirect to a physician, and offer to continue the population-level analysis instead.
 
 ## UHP vs CHP: The Central Postdoc-Grade Distinction
 
@@ -58,7 +73,7 @@ Horizontal pleiotropy comes in two regimes, and most "standard" MR sensitivity m
 | Cochran Q | Heterogeneity across Wald ratios | Total heterogeneity flag, not direction-specific | No | 3 | Cannot distinguish UHP from heterogeneity from CHP | Del Greco M F 2015 Stat Med 34:2926 |
 | MR-PRESSO | Detect + remove UHP outliers via RSS-out | Yes (assumes majority valid) | No | >=4 | >50% pleiotropic; any CHP; small n | Verbanck 2018 Nat Genet 50:693 |
 | GSMR + HEIDI-outlier | Outlier removal via single-instrument estimate heterogeneity | Yes | No | >=10 | CHP (HEIDI-outlier is heterogeneity-driven) | Zhu 2018 Nat Commun 9:224 |
-| MR-RAPS | Profile likelihood with overdispersion + Huber/Tukey loss | Yes; weak-IV robust | Partial via overdispersion | >=10 | Strong CHP | Zhao 2020 Ann Stat 48:1742 |
+| MR-RAPS | Profile likelihood with overdispersion + Huber/Tukey loss | Yes; weak-IV robust down to F~10 | Partial via overdispersion | >=10 | Strong CHP; at extreme-weak IV (mean F well below 10, e.g. ~2-3) the overdispersion estimator can degenerate ("very small"/negative, forced to tau2=0) and RAPS can underperform plain IVW -- do not assume RAPS beats IVW without checking its warnings | Zhao 2020 Ann Stat 48:1742 |
 | MR-Mix | Mixture-of-distributions over valid + invalid | Yes | Partial | >=20 | Few SNPs; very heterogeneous CHP | Qi & Chatterjee 2019 Nat Commun 10:1941 |
 | Contamination mixture | Profile likelihood over contamination fraction | Yes | Partial | >=20 | Few SNPs | Burgess 2020 Nat Commun 11:376 |
 | MR-Clust | k-means over Wald estimates with NULL cluster | Yes | Diagnostic for CHP via clusters | >=20 | Single-mechanism exposure (no clustering signal) | Foley 2021 Bioinformatics 37:531 |
@@ -177,7 +192,7 @@ Methodology evolves; verify against the Burgess & Thompson textbook (2nd ed 2021
 | Steiger r^2 difference | Reverse-causal flag at any per-SNP r2_GY > r2_GX | Hemani 2017 PLoS Genet 13:e1007081 |
 | Standard sensitivity battery | IVW + Egger + median + mode + PRESSO + Steiger + LOO | Hemani 2018 eLife 7:e34408 / STROBE-MR 2021 |
 
-LCV gcp interpretation thresholds (0, 0.5, 0.6, 1) are tabulated in usage-guide.md.
+LCV gcp interpretation thresholds (0, 0.5, 0.6, 1) are tabulated in the LCV section above.
 
 ## Standard Sensitivity Battery (Working Reference)
 
@@ -200,6 +215,7 @@ steiger <- directionality_test(dat)
 isq <- Isq(dat$beta.exposure, dat$se.exposure)
 nome_pass <- isq >= 0.9
 
+set.seed(42)  # mr_presso()'s global/outlier tests are Monte-Carlo; seed for a reproducible p-value
 presso <- mr_presso(
     BetaOutcome='beta.outcome', BetaExposure='beta.exposure',
     SdOutcome='se.outcome', SdExposure='se.exposure',
@@ -248,6 +264,17 @@ CAUSE requires sumstats from both exposure and outcome GWAS in matched effect-al
 - `loss.function = 'tukey'` (more aggressive; downweights extreme outliers more; choose when many obvious outliers suspected)
 - `loss.function = 'l2'` (non-robust; equivalent to weighted least squares; do not use when UHP suspected)
 
+These are not top-level arguments to `TwoSampleMR::mr_raps()` -- its signature is
+`mr_raps(b_exp, b_out, se_exp, se_out, parameters = default_parameters())`, so pass them nested:
+
+```r
+TwoSampleMR::mr_raps(b_exp = dat$beta.exposure, b_out = dat$beta.outcome,
+                      se_exp = dat$se.exposure, se_out = dat$se.outcome,
+                      parameters = list(over.dispersion = TRUE, loss.function = 'huber', shrinkage = FALSE))
+```
+
+Calling with bare `over.dispersion = TRUE, loss.function = 'huber'` throws `unused arguments`.
+
 Tukey is preferable when leave-one-out reveals 2+ SNPs single-handedly shifting the IVW estimate by > 1 SE.
 
 ## MR-Clust for Mechanism Heterogeneity
@@ -265,7 +292,7 @@ res_mc <- mr_clust_em(theta=ratio_hat, theta_se=ratio_se,
 per_cluster <- res_mc$results$best
 ```
 
-Clusters with cluster_class = 'null' are pleiotropy-only instruments. Per-cluster IVW estimates may differ substantially; biological annotation of the SNPs in each cluster (pathway, target gene) is the interpretation step.
+Clusters with cluster_class = 'null' are pleiotropy-only instruments. Per-cluster IVW estimates may differ substantially; biological annotation of the SNPs in each cluster (pathway, target gene) is the interpretation step. Pure statistical clustering without a biological story is weak evidence.
 
 ## LHC-MR Workflow
 
@@ -315,15 +342,23 @@ When forward and reverse both clear Steiger and both IVW p < 0.05, run LHC-MR jo
 
 ## LCV (Latent Causal Variable)
 
-LCV uses LDSC-merged genome-wide sumstats and reports gcp (genetic causality proportion) on [-1, 1]. It is a complement to, not a replacement for, MR; gcp ~ 0 with high LDSC rg implies pure genetic correlation without partial causation.
+LCV uses LDSC-merged genome-wide sumstats and reports gcp (genetic causality proportion) on [-1, 1]. It is a complement to, not a replacement for, MR; gcp ~ 0 with high LDSC rg implies pure genetic correlation without partial causation. LCV uses ALL genome-wide SNPs after LDSC-merging, not the MR instrument set.
 
 ```r
 source('LCV/R/RunLCV.R')
 res_lcv <- RunLCV(ldscores$L2, x$Z, y$Z)
-# res_lcv$gcp; res_lcv$pval.gcpzero.2tailed
+# res_lcv$gcp.pm (posterior mean gcp; there is no res_lcv$gcp field); res_lcv$pval.gcpzero.2tailed
 ```
 
-Full gcp interpretation table is in usage-guide.md.
+**gcp interpretation:**
+
+| gcp value | Interpretation |
+|-----------|----------------|
+| 0 | Pure genetic correlation; no partial causation |
+| 0.5 | Partial causation; mixture |
+| 0.6 | Partial causation; modestly causal direction |
+| 1 | Fully causal in tested direction |
+| Significant p_gcp != 0 | Directional evidence of (partial) causation |
 
 ## Required Supplementary Tables
 
@@ -400,12 +435,13 @@ Sub-items (30 total) detail per-method reporting. The full statement (JAMA 326:1
 | MR-PRESSO crashes with `Not enough intrumental variables` | Fewer than 4 SNPs | Need >=4 for PRESSO; for cis-MR with few SNPs use colocalization |
 | Egger intercept p < 0.05 but I^2_GX = 0.5 | NOME violated; intercept is artifactually inflated | SIMEX-correct or do not trust Egger; use MR-RAPS instead |
 | `Isq()` not found | TwoSampleMR version where Isq is unexported | Compute manually: Q_GX = sum((beta_GX/se_GX)^2); I2 = (Q_GX - (n-1))/Q_GX, clipped to [0,1] |
-| MR-RAPS `package not found` after CRAN install | CRAN-archived 2025-03-01 | `remotes::install_github('qingyuanzhao/mr.raps')`; call via `TwoSampleMR::mr_raps()` wrapper (MendelianRandomization does NOT export `mr_raps`) |
+| MR-RAPS `package not found` after CRAN install | CRAN-archived 2025-03-01 | `remotes::install_github('qingyuanzhao/mr.raps')`; call via `TwoSampleMR::mr_raps()` wrapper or `mr.raps::mr.raps()` directly (MendelianRandomization does NOT export `mr_raps`) |
+| MR-RAPS warns `overdispersion parameter is very small` / `negative, using tau2 = 0` and underperforms IVW | Extreme-weak IV (mean F well below the 10 threshold); the profile-likelihood overdispersion fit degenerates | Report both RAPS and IVW with the warning text; do not switch to RAPS as primary at extreme-weak F without checking which one is closer to other robust estimates (median/mode) |
 | CAUSE delta_ELPD CI spans zero; Pareto-k > 0.7 | <100 sig SNPs OR severe sample overlap | Use LHC-MR; or report CAUSE with the explicit caveat |
 | Steiger labels most instruments reverse-causal | Exposure GWAS imprecise OR sample size mismatch | Treat as one signal; cross-check with bidirectional MR |
 | LHC-MR runtime > 24h | Default nCores=1 on full sumstats | Use nCores >= 4; restrict to LDSC-overlapping SNPs first |
 | MR-PRESSO outliers all on same chromosome | Genome-wide LD not properly pruned; clumping window too narrow | Re-clump at r^2 < 0.001 in 10 Mb window |
-| MR-Mix returns NA | Few SNPs OR no variation in mixture support | Need >=20 SNPs; default mixture grid may need tuning |
+| MR-Mix / contamination mixture return a confident point estimate below their documented 20-SNP minimum (not NA) | Small n destabilizes the mixture-model fit without an internal check that refuses to report | Check n before trusting the output: below 20 SNPs, treat MR-Mix / conmix point estimates and CIs as unreliable regardless of apparent significance; report n_SNPs alongside the estimate; cross-check against MR-Clust and the full UHP battery rather than the mixture methods alone |
 
 ## References
 
