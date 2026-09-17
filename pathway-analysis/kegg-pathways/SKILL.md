@@ -10,6 +10,14 @@ license: MIT
 
 Reference examples tested with: clusterProfiler 4.18+, org.Hs.eg.db 3.18+, gson 0.1+ (snapshot pinning), SPIA 2.50+ and graphite 1.56+ (topology section).
 
+```r
+if (!require('BiocManager', quietly=TRUE)) install.packages('BiocManager')
+BiocManager::install(c('clusterProfiler', 'org.Hs.eg.db'))
+install.packages('gson')                     # snapshot pinning for reproducibility
+BiocManager::install(c('SPIA', 'graphite'))  # signed-topology perturbation
+BiocManager::install('pathview')             # KEGG-map overlay
+```
+
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
 
@@ -61,6 +69,36 @@ The three-generations framing (ORA -> FCS -> pathway topology) is Khatri 2012 *P
 | Multiple conditions to compare side by side | compareCluster(fun='enrichKEGG') | one model, faceted dotplot; never compare raw p-values |
 | Overlay per-gene data on the KEGG map image | pathview -> render | a KEGG-specific operation; generic plots -> enrichment-visualization |
 | The DE list / fold-changes themselves | -> differential-expression/de-results | upstream, not enrichment |
+
+## Agent Workflow
+
+1. Identify the question (membership, ranking, or signed perturbation) and pick enrichKEGG, gseKEGG, or SPIA accordingly.
+2. Convert gene IDs to the type KEGG expects (Entrez for eukaryotes, locus tags for prokaryotes) and build the measured universe.
+3. **If no measured/background gene set is available, tell the user before proceeding**: the default background is all KEGG-annotated genes, which biases results toward well-studied, metabolically central pathways (see "Whole-database universe in ORA" below) - do not silently run with the whole-KEGG default.
+4. Verify the organism code with search_kegg_organism when the organism is not a common model.
+5. Run the chosen method with documented thresholds and an explicit universe.
+6. For reproducibility, snapshot the KEGG release with gson and record the access date.
+7. Translate result IDs to symbols with setReadable (eukaryotes only) and report p.adjust/qvalue with fold enrichment, not raw p-values.
+8. Hand plotting to enrichment-visualization, or overlay data on the KEGG map with pathview.
+
+## Common Organism Codes
+
+| Code | Organism | Notes |
+|------|----------|-------|
+| hsa | Human | Entrez == KEGG gene ID |
+| mmu | Mouse | Entrez == KEGG gene ID |
+| rno | Rat | Entrez == KEGG gene ID |
+| dre | Zebrafish | |
+| dme | Drosophila | |
+| cel | C. elegans | |
+| sce | S. cerevisiae | |
+| ath | Arabidopsis | |
+| eco | E. coli K-12 | Bacterial; locus tags (b-numbers) |
+| pae | P. aeruginosa PAO1 | Bacterial; locus tags (PA-numbers) |
+| bsu | B. subtilis 168 | Bacterial |
+| ko | KEGG Orthology | Cross-species; use with KO IDs for non-model organisms |
+
+Use `search_kegg_organism('species_name', by='scientific_name')` to find codes for other organisms. KEGG covers thousands of species.
 
 ## Prepare the Gene IDs (the Join That Decides Everything)
 
@@ -191,6 +229,22 @@ library(pathview)
 vals <- setNames(de$log2FoldChange, de$entrez)
 pathview(gene.data=vals, pathway.id='hsa04110', species='hsa', gene.idtype='entrez')   # writes hsa04110.pathview.png
 ```
+
+## Understanding Results
+
+| Column | Description |
+|--------|-------------|
+| ID | KEGG pathway/module ID (hsa04110, M00001) |
+| Description | Pathway/module name |
+| GeneRatio | Query genes in the set / query genes mapped to any set |
+| BgRatio | Set genes in universe / universe genes mapped |
+| pvalue | Raw p-value |
+| p.adjust | BH-adjusted p-value (report this) |
+| qvalue | q-value |
+| geneID | Genes in the set (raw IDs until setReadable) |
+| Count | Number of query genes in the set |
+
+SPIA (`spia()`) output adds NDE, pNDE (over-representation), tA and pPERT (perturbation through the topology), pG/pGFdr/pGFWER (combined global), and Status (Activated/Inhibited); the graphite `runSPIA()` route returns the same columns minus `ID`/`KEGGLINK`.
 
 ## Per-Method Failure Modes
 
