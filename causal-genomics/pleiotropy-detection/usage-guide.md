@@ -2,45 +2,15 @@
 
 ## Overview
 
-Detect and adjust for horizontal pleiotropy in two-sample Mendelian randomization. Distinguishes uncorrelated horizontal pleiotropy (UHP) from correlated horizontal pleiotropy (CHP) and selects a method battery whose assumptions span both regimes.
-
-UHP vs CHP is the central distinction:
-
-- **UHP (uncorrelated)** - Pleiotropic alpha is independent of the instrument-exposure effect gamma. The InSIDE assumption holds. MR-Egger, weighted median, weighted mode, MR-PRESSO, MR-RAPS, MR-Mix, and contamination mixture address this regime.
-- **CHP (correlated)** - Pleiotropic alpha is correlated with gamma via a shared upstream factor (heritable confounder, network mediator). InSIDE is violated. IVW, Egger, PRESSO, and GSMR are all blind to CHP and return systematically biased "corrected" estimates. CAUSE, LHC-MR, and LCV are designed for CHP.
-
-A complete sensitivity battery must include at least one CHP-aware method when LDSC rg(exposure, outcome) `>= 0.3` or biology suggests a shared upstream factor.
+Detect and adjust for horizontal pleiotropy in two-sample Mendelian randomization by distinguishing uncorrelated (UHP) from correlated (CHP) pleiotropy and choosing a method battery whose assumptions span both regimes. See SKILL.md's "UHP vs CHP: The Central Postdoc-Grade Distinction" for the regime table, the InSIDE assumption, and the operational rg-threshold rule that triggers a CHP-aware method (CAUSE, LHC-MR, or LCV).
 
 ## Operational Decision Flow
 
 See SKILL.md's "Operational Decision Flow (4 Steps)" for the full escalation logic (LDSC rg gate, standard battery, CHP escalation, triangulation). Not repeated here so the two files can't drift apart on a fix like the LCV field-name correction above.
 
-## LCV gcp Interpretation
-
-| gcp value | Interpretation |
-|-----------|----------------|
-| 0 | Pure genetic correlation; no partial causation |
-| 0.5 | Partial causation; mixture |
-| 0.6 | Partial causation; modestly causal direction |
-| 1 | Fully causal in tested direction |
-| Significant p_gcp != 0 | Directional evidence of (partial) causation |
-
-LCV uses ALL genome-wide SNPs after LDSC-merging; it does NOT use the MR instrument set. It complements MR rather than replacing it.
-
 ## Prerequisites
 
-```r
-install.packages(c('remotes', 'TwoSampleMR', 'MendelianRandomization', 'simex'))
-remotes::install_github('rondolab/MR-PRESSO')          # CRAN-never; GitHub-only
-remotes::install_github('jean997/cause')               # CHP-aware (Morrison 2020)
-remotes::install_github('cnfoley/mrclust')             # Mechanism heterogeneity
-remotes::install_github('gqi/MRMix')                   # Mixture-of-distributions
-remotes::install_github('qingyuanzhao/mr.raps')        # CRAN-archived 2025-03; install from GitHub
-remotes::install_github('LizaDarrous/lhcMR')           # Heritable-confounder MR
-# LCV: git clone https://github.com/lukejoconnor/LCV (R scripts, no package)
-```
-
-Inputs are typically a harmonized TwoSampleMR data.frame (beta.exposure, beta.outcome, se.exposure, se.outcome, SNP, effect_allele, eaf, etc.). LHC-MR and LCV take genome-wide GWAS sumstats with LDSC-style merged SNPs; CAUSE takes pruned signature SNPs plus full sumstats for nuisance estimation.
+R packages install from CRAN and GitHub; see SKILL.md's Version Compatibility section for the exact install commands, version pins, and expected input formats.
 
 ## Quick Start
 
@@ -102,41 +72,8 @@ Tell your AI agent what you want to do:
 
 ## What the Agent Will Do
 
-1. Verify instrument selection (F-statistic distribution, LD pruning, MAF, harmonization, palindrome handling)
-2. Run IVW + Egger + weighted median + weighted mode side-by-side
-3. Test Egger intercept for directional UHP; compute I^2_GX for NOME validity; SIMEX-correct if needed
-4. Run MR-PRESSO with `>= 5000` distributions for global + outlier + distortion tests; produce corrected estimate
-5. Apply Steiger filter and report directionality test
-6. Run leave-one-out for stability
-7. If CHP is plausible (rg `>= 0.3` or biology suggests shared factor): add CAUSE (if sig SNPs `>= 100`) OR LHC-MR
-8. If mechanisms heterogeneous: run MR-Clust
-9. If weak instruments: switch primary to MR-RAPS with robust loss
-10. Reconcile UHP-method agreement vs CHP-method estimate; flag discordances
-11. Produce STROBE-MR table with all methods, thresholds, and limitations
-
-## Tips
-
-- **UHP vs CHP** - MR-PRESSO global non-significance does NOT rule out pleiotropy; it rules out UHP outliers. CHP is invisible to PRESSO.
-- **NbDistribution** - PRESSO uses 5000 minimum for stable p-values; published default 1000 gives noisy global-test p.
-- **Egger NOME** - Below I^2_GX 0.9, the Egger slope is biased toward null. SIMEX rescues the 0.6-0.9 range; below 0.6, use a different method (RAPS).
-- **Few-SNP Egger** - With fewer than 10 SNPs, Egger intercept CI is too wide to falsify pleiotropy; do not interpret non-significant intercept as "no pleiotropy" in this regime.
-- **CAUSE sample overlap** - When exposure and outcome GWAS share controls, CAUSE's rho parameter corrects for this; explicitly estimate it via `est_cause_params`.
-- **CAUSE underpowered regime** - Below 100 significant SNPs, delta_ELPD CI spans zero; consider LHC-MR or LCV instead.
-- **Steiger interpretation** - When exposure measurement error is high, Steiger flags can be artifactual; treat as one signal among many, especially when biology strongly supports the tested direction.
-- **MR-PRESSO majority assumption** - Above 50% pleiotropic, PRESSO removes valid instruments; weighted-mode (plurality-valid) is more robust in that regime.
-- **MR-RAPS install** - CRAN-archived 2025-03-01; install from GitHub `qingyuanzhao/mr.raps` and call via `TwoSampleMR::mr_raps()` (thin wrapper) or `mr.raps::mr.raps()` directly. The `MendelianRandomization` package does NOT export `mr_raps()`.
-- **MR-Clust biology** - Cluster output is most informative when SNPs in each cluster annotate to distinct pathways; pure statistical clustering without biological story is weak evidence.
-- **LHC-MR runtime** - Hours on full sumstats; restrict to LDSC-overlap SNPs and use `nCores >= 4`.
-- **LCV vs MR** - LCV uses genome-wide SNPs not just significant instruments; complements MR but does not replace it; gcp = 0 means rg only, no causation.
-- **STROBE-MR** - 20 items + 30 subitems (Skrivankova 2021 JAMA 326:1614; explanation BMJ 375:n2233); reviewer-required at major journals since 2022.
-- **Reproducibility** - Pin TwoSampleMR, MRPRESSO, CAUSE versions in the methods section; record harmonization choices.
+See SKILL.md's "Operational Decision Flow (4 Steps)" and "Standard Sensitivity Battery (Working Reference)" for the full step-by-step behavior, from instrument verification through STROBE-MR table output.
 
 ## Related Skills
 
-causal-genomics/mendelian-randomization - Primary causal estimation that this sensitivity battery validates
-causal-genomics/genetic-correlation - LDSC rg required for Step 1 of the decision flow; CHP escalation trigger
-causal-genomics/colocalization-analysis - Required for cis-MR drug-target signals where instruments are too few for Egger
-causal-genomics/fine-mapping - Identify causal variants underlying instrument loci
-causal-genomics/mediation-analysis - Multivariable MR for mediator-adjusted causal estimates
-population-genetics/association-testing - GWAS summary statistics underlying MR instruments
-clinical-biostatistics/effect-measures - Translate MR estimates to clinical effect measures
+See SKILL.md's Related Skills section.
