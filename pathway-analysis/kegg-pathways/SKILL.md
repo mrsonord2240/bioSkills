@@ -125,6 +125,7 @@ sig <- de[de$padj < 0.05, ]   # DE genes only
 map <- bitr(sig$gene, 'SYMBOL', 'ENTREZID', org.Hs.eg.db)   # bitr drops/many-to-one: MERGE, never assign as names
 de_vec <- setNames(sig$log2FoldChange[match(map$SYMBOL, sig$gene)], map$ENTREZID)
 de_vec <- de_vec[!duplicated(names(de_vec))]
+set.seed(123)   # SPIA's pPERT is a stochastic bootstrap; fix the seed before spia()
 res <- spia(de=de_vec, all=universe, organism='hsa', nB=2000, plots=FALSE)   # nB=2000 bootstraps for pPERT
 # output cols: Name, ID, pSize, NDE, pNDE, tA, pPERT, pG, pGFdr, pGFWER, Status, KEGGLINK
 # Status reports inferred Activated / Inhibited from the sign of tA
@@ -133,8 +134,20 @@ res <- spia(de=de_vec, all=universe, organism='hsa', nB=2000, plots=FALSE)   # n
 library(graphite)
 db <- pathways('hsapiens', 'kegg')
 db <- convertIdentifiers(db, 'ENTREZID')
-prepareSPIA(db, 'kegg_hsa_spia')              # writes the pathway dataset file
-gr <- runSPIA(de=de_vec, all=universe, 'kegg_hsa_spia')
+# runSPIA checks `datasetName(pathwaySetName) %in% dir()`, and bare dir() lists only the
+# CURRENT WORKING DIRECTORY's filenames -- an absolute/tempdir() pathwaySetName can never
+# match, so prepareSPIA/runSPIA must both run with a RELATIVE name from a matching setwd().
+# convertIdentifiers() also prefixes graphite's node IDs ('ENTREZID:1017'), so de_vec/all
+# need the same prefix or every ID join returns 0 rows even once the path bug is worked
+# around. Confirmed against installed graphite 1.52.0 and current Bioconductor-release
+# graphite 1.56.0 source.
+de_vec_gr  <- setNames(de_vec, paste0('ENTREZID:', names(de_vec)))
+universe_gr <- paste0('ENTREZID:', universe)
+owd <- getwd(); setwd(tempdir())
+prepareSPIA(db, 'kegg_hsa_spia')              # writes kegg_hsa_spiaSPIA.RData into tempdir()
+set.seed(123)   # graphite's runSPIA bootstraps pPERT the same way spia() does
+gr <- runSPIA(de=de_vec_gr, all=universe_gr, 'kegg_hsa_spia')
+setwd(owd)
 ```
 
 SPIA aborts if more than ~1% of the DE IDs are absent from `all`, so build the universe from the same ID space. The standalone SPIA package also ships a frozen `hsaSPIA` data object that is an OLDER snapshot than a live enrichKEGG query - do not mix the two in one comparison.
@@ -191,7 +204,7 @@ pathview(gene.data=vals, pathway.id='hsa04110', species='hsa', gene.idtype='entr
 **Trigger:** setting use_internal_data=TRUE for reproducibility. **Mechanism:** it loads the deprecated 2012 KEGG.db, not a current pin (and may simply fail). **Symptom:** stale or absent pathways unlike the live result. **Fix:** use a gson snapshot instead; treat KEGG.db as legacy-only.
 
 ### SPIA on metabolic maps
-**Trigger:** running SPIA/graphite topology on glycolysis or other metabolic maps. **Mechanism:** metabolic maps are compound-mediated and give no clean signed gene->gene graph. **Symptom:** meaningless perturbation scores. **Fix:** restrict SPIA to signaling maps; use enrichKEGG/gseKEGG for metabolism.
+**Trigger:** running SPIA/graphite topology on glycolysis or other metabolic maps. **Mechanism:** metabolic maps are compound-mediated and give no clean signed gene->gene graph, so SPIA's bundled `hsaSPIA` dataset only contains signaling pathways. **Symptom:** the metabolic pathway is simply absent from SPIA's output entirely (e.g. hsa00010 never appears in `res`), not scored with a meaningless value. **Fix:** restrict SPIA to signaling maps; use enrichKEGG/gseKEGG for metabolism.
 
 ### Whole-database universe in ORA
 **Trigger:** omitting `universe`. **Mechanism:** the default background is all KEGG-annotated genes, biased toward well-studied, metabolically central genes. **Symptom:** inflated significance for pathways enriched in measured/expressed genes (the tissue-specificity artifact). **Fix:** set universe to the genes that could have been called DE, in the same ID type.
@@ -225,7 +238,7 @@ pathview(gene.data=vals, pathway.id='hsa04110', species='hsa', gene.idtype='entr
 | `gson=` rejected by enrichKEGG | enrichKEGG/gseKEGG have no gson argument | pass the gson to the generic enricher()/GSEA() instead |
 | Different pathways on rerun | live KEGG changed between runs | pin with a gson snapshot and record the access date |
 | SPIA: "more than 1% of de IDs not in all" | DE IDs not a subset of the universe | build de and all from the same ID space |
-| SPIA gives nonsense on glycolysis | topology on a metabolic map | use enrichKEGG/gseKEGG; SPIA is signaling-only |
+| SPIA output has no row for a metabolic pathway | hsaSPIA only contains signaling pathways | use enrichKEGG/gseKEGG for metabolism; SPIA is signaling-only |
 | Bacterial list gives 0 hits | Entrez/bitr forced onto a prokaryote | pass locus tags with keyType='kegg', no OrgDb |
 
 ## References

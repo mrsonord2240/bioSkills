@@ -49,11 +49,12 @@ Tell your AI agent what you want to do:
 ## What the Agent Will Do
 1. Identify the question (membership, ranking, or signed perturbation) and pick enrichKEGG, gseKEGG, or SPIA accordingly.
 2. Convert gene IDs to the type KEGG expects (Entrez for eukaryotes, locus tags for prokaryotes) and build the measured universe.
-3. Verify the organism code with search_kegg_organism when the organism is not a common model.
-4. Run the chosen method with documented thresholds and an explicit universe.
-5. For reproducibility, snapshot the KEGG release with gson and record the access date.
-6. Translate result IDs to symbols with setReadable (eukaryotes only) and report p.adjust/qvalue with fold enrichment, not raw p-values.
-7. Hand plotting to enrichment-visualization, or overlay data on the KEGG map with pathview.
+3. **If no measured/background gene set is available, tell the user before proceeding**: the default background is all KEGG-annotated genes, which biases results toward well-studied, metabolically central pathways - do not silently run with the whole-KEGG default.
+4. Verify the organism code with search_kegg_organism when the organism is not a common model.
+5. Run the chosen method with documented thresholds and an explicit universe.
+6. For reproducibility, snapshot the KEGG release with gson and record the access date.
+7. Translate result IDs to symbols with setReadable (eukaryotes only) and report p.adjust/qvalue with fold enrichment, not raw p-values.
+8. Hand plotting to enrichment-visualization, or overlay data on the KEGG map with pathview.
 
 ## Common Organism Codes
 
