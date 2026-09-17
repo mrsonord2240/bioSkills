@@ -1,5 +1,6 @@
 #!/bin/bash
-# Reference: LDSC v1.0.1+, baselineLD_v2.2, Multi_tissue_chromatin_1000Gv3 | Verify API if version differs
+# Reference: LDSC v3.0.1 (CBIIT/ldsc, checked on commit 1f09cf0), baselineLD_v2.2,
+# Multi_tissue_chromatin_1000Gv3 | Verify API if version differs
 #
 # End-to-end LDSC pipeline:
 #   1. Munge GWAS summary statistics into LDSC format
@@ -12,10 +13,9 @@
 #   bash ldsc_partitioned_h2.sh <gwas.tsv> <trait_prefix> [samp_prev] [pop_prev]
 #
 # Prerequisite environment:
-#   Python 3 LDSC fork installed; prefer abdenlab/ldsc-python3 (v2.0.0) because
-#   belowlab/ldsc v3.0.1 README states the --h2/--rg/--h2-cts CLI is broken (use
-#   Docker jtb114/ldsc:latest for the belowlab fallback). See SKILL.md.
-#   Reference resources downloaded from https://alkesgroup.broadinstitute.org/LDSCORE/
+#   git clone https://github.com/CBIIT/ldsc.git ; Python 3.9+. --h2 and --rg (steps 2, 3,
+#   5) run unmodified; --h2-cts (step 4) needs one line patched first -- see SKILL.md's
+#   "Tool Install Notes". Reference resources downloaded from https://alkesgroup.broadinstitute.org/LDSCORE/
 #     - eur_w_ld_chr/                                          (univariate h2)
 #     - 1000G_Phase3_baselineLD_v2.2_ldscores/                 (partitioned h2)
 #     - 1000G_Phase3_frq/1000G.EUR.QC.{1..22}.frq              (allele frequencies)
