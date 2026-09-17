@@ -10,6 +10,13 @@ license: MIT
 
 Reference examples tested with: clusterProfiler 4.18+, rWikiPathways 1.26+, org.Hs.eg.db 3.18+.
 
+```r
+if (!require('BiocManager', quietly = TRUE))
+    install.packages('BiocManager')
+
+BiocManager::install(c('clusterProfiler', 'rWikiPathways', 'enrichplot', 'org.Hs.eg.db'))
+```
+
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
 
@@ -48,6 +55,16 @@ WikiPathways is a wiki: anyone can create or edit a pathway, content is CC0, and
 | PFOCR (Pathway Figure OCR) | Hanspers 2020 *Genome Biol* 21:273; Shin 2023 *BMC Genomics* 24:713 | machine-OCR'd gene sets from published figures; larger + noisier, no edges | high-recall disease/process coverage as a complement; NOT what `enrichWP` queries |
 | KEGG / Reactome (siblings) | -> kegg-pathways, reactome-pathways | metabolic/signaling maps (live) / curated reactions (local) | the primary databases WP complements |
 
+## WikiPathways vs KEGG/Reactome
+
+| Feature | WikiPathways | KEGG | Reactome |
+|---------|--------------|------|----------|
+| License | CC0 (fully open) | Restrictive (commercial bulk/API) | CC-BY / CC0 |
+| Curation | Community wiki, no formal peer review | Largely automated KO reconstruction | Expert-curated and reviewed |
+| Species | ~30+ | 4000+ (genome-derived) | ~15 (deep human) |
+| Focus | Disease/drug + general | Metabolic/signaling | Reaction-level mechanism |
+| Reproducibility | Pin a dated monthly GMT (live `current/` otherwise) | Live REST API (date-dependent) | Local reactome.db (version-pinned) |
+
 ## Decision Tree by Scenario
 
 | Scenario | Recommended | Why |
@@ -61,6 +78,14 @@ WikiPathways is a wiki: anyone can create or edit a pathway, content is CC0, and
 | Non-model but WP-supported species (zebrafish, fly, worm, Arabidopsis) | `enrichWP(entrez, '<scientific name>')`, verify via `get_wp_organisms()` | WP covers ~30+ species |
 | Compare up- vs down-regulated | `compareCluster(geneClusters=list(up=..,down=..), fun='enrichWP', organism=)` | one model, faceted dotplot |
 | Genes are SYMBOL/ENSEMBL | convert to Entrez first (`bitr`) | the WP GMT is Entrez-keyed; other types overlap nothing |
+
+## Agent Workflow
+
+1. Load DE results and extract the significant gene list (ORA) or build the named decreasing ranking vector (GSEA).
+2. Convert gene IDs to Entrez with `bitr` and set the background universe to the tested genes.
+3. For a reproducible run, pin a dated GMT with `downloadPathwayArchive(date=, format='gmt')`, split the `name%version%wpid%org` term field, and run `enricher`/`GSEA`; otherwise run `enrichWP`/`gseWP` and log that it used the `current/` release.
+4. Make the result readable with `setReadable()` and report `p.adjust`/`qvalue` (not raw p).
+5. Hand the result object to enrichment-visualization for plots and corroborate hits against KEGG/Reactome.
 
 ## Over-Representation Analysis (enrichWP)
 
@@ -139,6 +164,22 @@ wp_zfish <- enrichWP(gene=zfish_entrez, organism='Danio rerio')
 # verify the exact organism string before running:
 get_wp_organisms()                       # plural accessor; the string must match exactly
 ```
+
+## Understanding Results
+
+| Column | Description |
+|--------|-------------|
+| ID | WikiPathways stable ID (WP####) |
+| Description | Pathway name |
+| GeneRatio | Query genes in the pathway / query genes mapped to any pathway |
+| BgRatio | Pathway genes in the universe / universe genes mapped |
+| pvalue | Raw p-value |
+| p.adjust | BH-adjusted p-value (report this, not raw p) |
+| qvalue | q-value |
+| geneID | Genes in the pathway (symbols after setReadable) |
+| Count | Number of query genes in the pathway |
+
+For GSEA results read `NES` (sign = direction along the ranking) and `core_enrichment` (the leading-edge genes).
 
 ## Per-Method Failure Modes
 
