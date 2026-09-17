@@ -8,7 +8,7 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: GenomicSEM 0.0.5 (GitHub `GenomicSEM/GenomicSEM`) + **lavaan 0.6.19 pinned** (see Tool Installation for the install command and why), LDSC v1.0.1+ (Python 3; abdenlab fork -- see Tool Installation), baselineLD_v2.2 annotations (alkesgroup.broadinstitute.org/LDSCORE), MTAG 1.0.8+ (Python; `JonJala/mtag`), R 4.4+.
+Reference examples tested with: GenomicSEM 0.0.5 (GitHub `GenomicSEM/GenomicSEM`) + **lavaan 0.6.19 pinned** (see Tool Installation for the install command and why), LDSC (Python 3; `CBIIT/ldsc` commit `1f09cf0` -- see Tool Installation), baselineLD_v2.2 annotations (alkesgroup.broadinstitute.org/LDSCORE), MTAG 1.0.8+ (Python; `JonJala/mtag`), R 4.4+.
 
 **lavaan is capped, not floored: use 0.6.19.** On lavaan >= 0.7.0, GenomicSEM 0.0.5's internal reorder-step `sem()` calls omit the `ordered = FALSE` that lavaan now requires for DWLS on continuous data, so `usermodel()`, `commonfactorGWAS()` and `userGWAS()` crash under both estimators, and no `estimation=` choice avoids it (symptoms in Common Errors). Upgrading GenomicSEM does not help: the calls are unchanged at GitHub HEAD `6b65ca5` (2026-08-26). GenomicSEM 0.0.5 + lavaan 0.6.19 runs all four core functions under DWLS and ML, recovering planted loadings and factor correlations on synthetic inputs.
 
@@ -463,11 +463,11 @@ remotes::install_github('MRCIEU/TwoSampleMR')  # for downstream MR using factor 
 For Python tools:
 
 ```bash
-# LDSC python3 fork (GenomicSEM input format). belowlab/ldsc v3.0.1 broke the
-# --h2/--rg/--h2-cts CLI per its README; use abdenlab/ldsc-python3 (v2.0.0)
-# for a working CLI. Docker jtb114/ldsc:latest is the belowlab fallback.
-git clone https://github.com/abdenlab/ldsc-python3.git
-cd ldsc-python3 && pip install .   # Poetry project (pyproject.toml); no requirements.txt
+# LDSC (munge_sumstats.py for GenomicSEM input): CBIIT/ldsc, checked on commit 1f09cf0,
+# Python 3.9. abdenlab/ldsc-python3 v2.0.0 and belowlab/ldsc v3.0.1 crash on --h2/--rg.
+git clone https://github.com/CBIIT/ldsc.git && cd ldsc
+micromamba create -n ldsc -c conda-forge -c bioconda python=3.9 bitarray=2 pybedtools=0.10.0 -y
+micromamba run -n ldsc pip install numpy==1.21.5 pandas==1.3.3 scipy==1.7.3
 
 # MTAG
 git clone https://github.com/JonJala/mtag.git
