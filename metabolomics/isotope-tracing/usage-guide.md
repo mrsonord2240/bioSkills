@@ -4,11 +4,8 @@
 Stable-isotope-resolved metabolomics (SIRM) feeds a 13C/15N/2H-labeled tracer and measures how label propagates into downstream metabolites, reporting metabolic ACTIVITY (flux) rather than pool size. This skill guards against the two errors that silently fabricate flux: reading a pool concentration as activity (pool and labeling can move in opposite directions), and interpreting raw isotopologue intensities without the mandatory natural-abundance / tracer-purity correction and steady-state check.
 
 ## Prerequisites
-```bash
-pip install isocor numpy
-# high-resolution R alternative:
-# R: install.packages('accucor')
-```
+Install commands: SKILL.md's Version Compatibility section.
+
 Conceptual prerequisites: the chosen tracer and its purity, the molecular (and any derivatization) formula per metabolite, the instrument resolution (low-res QqQ vs high-res Orbitrap), and whether the design is single-timepoint (needs verified steady state) or a labeling time course.
 
 ## Quick Start
@@ -36,13 +33,6 @@ Tell your AI agent what you want to do:
 4. Compute the corrected MID and fractional enrichment, and visualize as a stacked-bar MID per condition.
 5. Check whether labeling has plateaued before any flux interpretation; flag transients for INST-MFA.
 6. Hand off flux fitting (13C-MFA / INST-MFA) to a modeling tool (INCA) and pool quantification to targeted-analysis.
-
-## Tips
-- Never plot or model raw isotopologue areas; correct first or the MID is wrong by construction.
-- Fractional enrichment is concentration-independent - robust to recovery/matrix effects but silent about amount.
-- A rising intermediate pool can mean LESS downstream flux; report pool and labeling separately.
-- Quench fast and cold; high-turnover metabolites scramble labeling between harvest and extraction.
-- Mass spectra resolve isotopologues (count of heavy atoms), not isotopomers (position) - use positional tracers or NMR for position.
 
 ## Related Skills
 - metabolomics/targeted-analysis - Absolute pool quantification and MRM/SRM mechanics
