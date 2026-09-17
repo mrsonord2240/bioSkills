@@ -18,10 +18,20 @@ def bulk_summaries(db, ids, chunk=CHUNK):
         time.sleep(DELAY)
 
 
+def organism_of(s):
+    '''Current nucleotide ESummary docsums (Biopython 1.88) carry no Organism field --
+    derive it from the leading binomial in Title instead.'''
+    org = s.get('Organism')
+    if org:
+        return org
+    words = s.get('Title', '').split()
+    return ' '.join(words[:2]) if len(words) >= 2 else s.get('Title', '?')
+
+
 print('=== Nucleotide docsum: organism, length, AccessionVersion ===')
 ids = ['NM_007294.4', 'NM_000059.4', 'NM_000546.6', 'NM_001126112.3']
 for s in bulk_summaries('nucleotide', ids):
-    print(f'  {s["AccessionVersion"]:<18} {s["Length"]:>8} nt   {s["Organism"]}')
+    print(f'  {s["AccessionVersion"]:<18} {s["Length"]:>8} nt   {organism_of(s)}')
 
 print('\n=== PubMed docsum: title, journal, date ===')
 pmids = ['35412348', '34502548', '36045532']
