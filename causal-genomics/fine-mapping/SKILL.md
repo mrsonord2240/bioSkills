@@ -28,6 +28,8 @@ If a call throws an error about an argument that no longer exists, introspect th
 - Python (functional priors): `polyfun.py --compute-h2-L2` -> per-SNP priors -> susie_rss with `prior_weights=`
 - Python (TWAS fine-mapping): `focus finemap` on gene-level Z-scores
 
+**Platform note:** FINEMAP, SuSiEx, PAINTOR, and DAP-G are POSIX (Linux/macOS) command-line binaries with no native Windows build. On Windows, run them under WSL, or use `susie_rss` / SuSiE-inf as the equivalent inference path.
+
 Fine-mapping is a Bayesian model selection problem; LD is not noise but structured prior information. Most failure modes trace back to one of three issues: (a) LD reference mismatched to the GWAS sample; (b) the sparse-effects prior being wrong for the locus (polygenic background); or (c) too small an L cap. The `estimate_s_rss()` lambda and `kriging_rss()` per-SNP diagnostic catch (a) before downstream credible sets are reported.
 
 ## Algorithmic Taxonomy
@@ -324,8 +326,12 @@ FINEMAP and SuSiE agree when sparsity holds; disagreement often reveals non-spar
 
 **Approach:** Fit susie_rss separately per trait; pass both `susie` objects to `coloc.susie`; per-credible-set colocalization probabilities are returned.
 
+**Precondition:** `coloc.susie` matches SNPs between the two fits' `lbf_variable` matrices via `intersect(colnames(...))`. If `z`/`R` are unnamed, that intersect is empty and `coloc.susie` fails with a cryptic, unrelated `data.table` error (`Check that is.data.table(DT) == TRUE ... := is defined for use in j`) instead of a clear message. Name `z1`/`z2` and set matching `ld_matrix` dimnames to the same SNP IDs before fitting.
+
 ```r
 library(coloc)
+
+names(z1) <- names(z2) <- colnames(ld_matrix) <- rownames(ld_matrix) <- snp_ids
 
 fit_trait1 <- susie_rss(z = z1, R = ld_matrix, n = N1, L = 10)
 fit_trait2 <- susie_rss(z = z2, R = ld_matrix, n = N2, L = 10)
@@ -400,6 +406,7 @@ Every locus reported should carry these columns; missing fields are the most com
 | `pip` all ~ 1/p (uniform) | Convergence failure OR all effects pruned | Check `fit$converged`; raise L; check Z scale |
 | FINEMAP `Error: SNP names do not match` | .z and .ld SNP order differ | Ensure both are sorted identically; pass matched .snp file |
 | Coloc.susie returns NULL | One trait has zero credible sets | Verify both fits succeeded; lower coverage to 0.9 if signal is weak |
+| Coloc.susie crashes with `data.table` error (`:= is defined for use in j`) | `z`/`R` passed to `susie_rss` without SNP-ID names, so `coloc.susie`'s internal SNP match is empty | Name `z1`/`z2` and set matching `ld_matrix` dimnames before fitting; see Coloc.susie Integration precondition |
 | SuSiEx output empty | Per-population lists misaligned with reference panels | Verify `--sst_file`/`--ref_file`/`--ld_file` are in the same population order; check `--bp` window |
 | PolyFun priors do not change PIPs | Passed to `prior_variance` instead of `prior_weights` | Read susieR docs; use `prior_weights=` |
 
