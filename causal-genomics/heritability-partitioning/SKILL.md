@@ -8,14 +8,34 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: LDSC v1.0.1+ (Python 3 fork; prefer `abdenlab/ldsc-python3` v2.0.0 which retains the working `--h2 / --rg / --h2-cts` CLI -- `belowlab/ldsc` v3.0.1 explicitly broke that CLI per its README and is best run via Docker `jtb114/ldsc:latest`), LDAK 6.0+, BOLT-LMM 2.4.1+, GCTA 1.94+, HESS 0.5.4+, HDL 1.4.0+ (R; GitHub `zhenin/HDL`), Popcorn 1.0+ (Python; brielin/Popcorn), baselineLD_v2.2 annotations (alkesgroup.broadinstitute.org/LDSCORE).
+Reference examples tested with: LDSC v3.0.1 (`CBIIT/ldsc`, `main` branch, commit `1f09cf0c`, Python
+3.9+ -- see "Tool Install Notes"), LDAK 6.0+, BOLT-LMM 2.4.1+, GCTA 1.94+, HESS 0.5.4+, HDL 1.4.0+ (R;
+GitHub `zhenin/HDL`), Popcorn 1.0+ (Python; brielin/Popcorn), baselineLD_v2.2 annotations
+(alkesgroup.broadinstitute.org/LDSCORE).
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `python -c 'import <module>; help(<module>)'`
 - R: `packageVersion('<pkg>')` then `?function_name`
 - CLI: `<tool> --version` then `<tool> --help`
 
-LDSC's official repository (bulik/ldsc) is Python 2.7 only and unmaintained since 2019; use the Python 3 community forks. If code throws ImportError, AttributeError, or a "category not found" error in the LD score file, introspect the installed binary and the actual LD-score column headers rather than retrying.
+**LDSC fork history (checked 2026-09-17):** `bulik/ldsc`'s own README was updated 2026-01-16 to say
+it is superseded by `CBIIT/ldsc` (NIH Center for Biomedical Informatics and Information Technology),
+a maintained Python 3 port with a 2026-08-10 commit and an accompanying preprint. Earlier advice to
+use `abdenlab/ldsc-python3` or `belowlab/ldsc` is retracted: both were verified broken on `--h2`,
+`--rg`, and/or `--h2-cts` in the exact pinned version (wrong internal dispatch names, a numpy>=2
+crash, an `n_chr`/`num` keyword mismatch). Use `CBIIT/ldsc` per "Tool Install Notes" below; `--h2` and
+`--rg` run unmodified, `--h2-cts` needs one documented one-line patch (same section). If code throws
+ImportError, AttributeError, or a "category not found" error in the LD score file, introspect the
+installed binary and the actual LD-score column headers rather than retrying.
+
+## Scope
+
+h2 and PRS outputs are population-level research statistics (variance explained across a cohort), not
+an individual diagnostic or prescriptive tool -- never use them to tell a specific person their odds of
+developing a disease or what treatment to start; redirect that request to a clinician or genetic
+counselor. If asked for a heritability or enrichment number with no data supplied, do not invent one;
+either run the real pipeline on data the user provides, or offer a clearly-cited published estimate
+from the literature and label it as external, not computed.
 
 # Heritability Partitioning
 
@@ -76,6 +96,14 @@ The LDSC intercept is widely misinterpreted as a "confounding score". The correc
 
 **Operational rule:** Always report intercept, mean chi-square, and ratio together. Do not interpret intercept in isolation. For sample-overlap diagnosis between two GWAS, use bivariate LDSC intercept, not univariate.
 
+| Intercept | Ratio | Interpretation |
+|-----------|-------|----------------|
+| ~1.0 | ~0 | No inflation; h2 trustworthy |
+| 1.0 - 1.1 | < 0.2 | Mostly polygenic; h2 trustworthy |
+| 1.1 - 1.3 | 0.2 - 0.5 | Mild inflation; investigate population structure / sample overlap |
+| 1.3 - 1.5 | 0.5 - 0.8 | Substantial inflation; report ratio jointly; consider re-genotype-QC |
+| > 1.5 | -- | Re-run after PC adjustment or genomic control; do not interpret h2 |
+
 **Intercept > 1.5 troubleshooting ladder** (work in order; stop when source is found): (a) per-cohort PC adjustment was insufficient; refit GWAS with more PCs (10-20) or per-cohort separately, (b) cryptic relatedness in the GWAS cohort -- run `king --related` and remove pairs with kinship > 0.05 (or 0.0884 for second-degree), (c) case-control matching imbalance -- check case/control PCs separately, (d) sample-overlap with one of the contributing cohorts (especially in meta-analysis) -- check bivariate intercepts pairwise, (e) if biobank-internal, recompute the GWAS with sample-level relatedness exclusion before LDSC.
 
 ## LDSC vs LDAK Reconciliation
@@ -112,6 +140,8 @@ ldsc.py \
 # Apply Bonferroni at 0.05 / nrow; top tissues are trait-relevant
 ```
 
+The `.ldcts` manifest is tab-separated, one row per cell type: `<name>\t<ldscore_prefix>,<control_ldscore_prefix>` (the control prefix is optional -- omit the comma if there is none). `--ref-ld-chr-cts` and the baseline `--ref-ld-chr` both need chromosome-split LD score files (e.g. `prefix1.l2.ldscore.gz` ... `prefix22.l2.ldscore.gz`), not a single-file prefix.
+
 Published `.ldcts` files cover GTEx tissues, Roadmap epigenome, immune cell types, and scATAC clusters. Custom .ldcts for novel cell types requires computing per-cell-type LD scores from a chromatin BED via `ldsc.py --l2 --bfile ... --annot <cell>.annot.gz`.
 
 ## Quantitative Thresholds
@@ -121,9 +151,7 @@ Published `.ldcts` files cover GTEx tissues, Roadmap epigenome, immune cell type
 | mean chi-square > 1.02 | LDSC wiki / Bulik-Sullivan 2015 | Below this, LDSC h2 estimate has huge SE; need N proportional to 1 / h2 |
 | h2 SE < 0.02 | LDSC convention | Below this SE, h2 estimate is interpretable; above, treat as exploratory |
 | h2 SE >= 0.02 OR mean chi-square < 1.02 | LDSC convention | Estimate unreliable; N >= 50k is typical noise floor for h2 ~ 0.1 (scales as ~1/h2) |
-| LDSC intercept in (1, 1.5] | Bulik-Sullivan 2015 | Mild inflation acceptable; report ratio |
-| LDSC intercept > 1.5 | -- | Substantial inflation; investigate stratification / overlap before interpreting h2 |
-| LDSC ratio < 0.2 | Bulik-Sullivan 2015 | Most inflation is polygenic; estimate is trustworthy |
+| LDSC intercept / ratio bins | Bulik-Sullivan 2015 | See the intercept/ratio table under "LDSC Intercept Interpretation" |
 | Stratified LDSC enrichment p < 0.05 / N_annot | Finucane 2015 | Bonferroni across annotations in the baseline-LD model |
 | S-LDSC cell-type p < 2.5e-4 | Finucane 2018; ~200 tissues | Bonferroni for tissue prioritization |
 | HESS h2 per locus needs >= 1000 SNPs | Shi 2017 AJHG 101:737 | Quadratic form unstable below this density |
@@ -131,6 +159,20 @@ Published `.ldcts` files cover GTEx tissues, Roadmap epigenome, immune cell type
 | LDAK tagging file build match | Speed 2019 | hg19 vs hg38 tagging files non-interchangeable |
 | Annotation > 0.5% of genome | Finucane 2015 | Smaller categories underpowered for tau estimation |
 | Effective N > 5000 per population (Popcorn) | Brown 2016 AJHG 99:76 | Below this, trans-ancestry rg has very wide CI |
+
+## Computational Footprint
+
+| Method | Per-trait runtime | Hardware |
+|--------|------------------|----------|
+| LDSC h2 (univariate) | minutes | laptop |
+| Stratified LDSC + baseline-LD | 10-20 min | laptop |
+| LDSC cell-type prioritization (~200 tissues) | hours, single-threaded | server |
+| HESS genome-wide local h2 | hours per chromosome | cluster |
+| BOLT-REML at N = 500k | days | cluster |
+| HDL.rg (genetic correlation) | seconds to minutes | laptop |
+| LDAK SumHer | tens of minutes | laptop |
+
+graphREML on biobank-scale (N > 200k) typically beats S-LDSC per-trait runtime when an LDGM panel is available. Build runtime escalates with annotation count; cell-type prioritization with ~200 tissues is the most expensive per-trait step.
 
 ## LDSC Standard Workflow
 
@@ -367,13 +409,21 @@ HDL UKB reference (`UKB_array_SVD_eigen90_extraction`) requires non-overlapping 
 ## Tool Install Notes
 
 ```bash
-# LDSC Python 3 fork (official bulik/ldsc is Python 2.7, unmaintained since 2019)
-# IMPORTANT: belowlab/ldsc v3.0.1 broke the --h2 / --rg / --h2-cts CLI per its README.
-# For a working CLI matching the flags below, use abdenlab/ldsc-python3 (v2.0.0)
-# OR run belowlab/ldsc via Docker: `docker pull jtb114/ldsc:latest`.
-git clone https://github.com/abdenlab/ldsc-python3.git   # working CLI
-cd ldsc-python3
-pip install .   # abdenlab/ldsc-python3 is a Poetry project (pyproject.toml); no environment.yml/requirements.txt
+# LDSC: use CBIIT/ldsc (NIH CBIIT's maintained Python 3 fork; bulik/ldsc's own README
+# points here as of 2026-01-16). Checked on commit 1f09cf0 (2026-08-10), Python 3.9.
+git clone https://github.com/CBIIT/ldsc.git
+cd ldsc
+conda create --name ldsc python=3.9 -y && conda activate ldsc   # or: micromamba create -n ldsc -c conda-forge -c bioconda python=3.9 bitarray=2 pybedtools=0.10.0 -y
+pip install numpy==1.21.5 pandas==1.3.3 scipy==1.7.3   # environment3.yml's pins; conda-installed numpy/pandas float otherwise
+./ldsc.py -h   # verify: prints the full flag list, no traceback
+
+# --h2 and --rg run as-is against this clone. --h2-cts needs one line patched first:
+#   ldscore/sumstats.py ~line 285: ref_ld_cts = ... .loc[:,1:])  ->  ... .iloc[:,1:])
+# (a leftover from replacing pandas' removed .ix[:,1:] with the label-based .loc instead of
+# the positional .iloc; pandas >=1.0 raises TypeError on the unpatched line.) Without the
+# patch, --h2-cts fails with "cannot do slice indexing on Index with these indexers [1] of
+# type int". LD score files must be gzipped (`.l2.ldscore.gz`) -- ldscore() hardcodes that
+# suffix; every official reference bundle already ships gzipped.
 
 # LDAK 6+
 wget https://raw.githubusercontent.com/dougspeed/LDAK/main/ldak6.3.linux
@@ -391,6 +441,10 @@ wget https://alkesgroup.broadinstitute.org/LDSCORE/1000G_Phase3_weights_hm3_no_M
 # Multi-tissue chromatin ldcts (Finucane 2018)
 wget https://alkesgroup.broadinstitute.org/LDSCORE/Multi_tissue_chromatin_1000Gv3_ldscores.tgz
 ```
+
+Before pointing LDSC at real GWAS data, confirm the install works: `bash examples/smoke_test_ldsc.sh`
+runs `--h2`, `--rg`, and `--h2-cts` against the tiny bundled fixtures in `examples/data/` (copied from
+`CBIIT/ldsc`'s own test suite) and prints real, checkable regression output for each.
 
 ```r
 # HDL
@@ -436,17 +490,4 @@ git clone https://github.com/brielin/Popcorn.git && cd Popcorn && pip install .
 - Berisa T & Pickrell JK 2016 Bioinformatics 32:283 (LDetect locus partition)
 - Li H, Kamath T, Mazumder R, Lin X, O'Connor LJ 2024 medRxiv 2024.11.04.24316716 (graphREML; published Nat Genet 2026)
 
-## Related Skills
-
-- causal-genomics/mendelian-randomization - h2 / rg-aware instrument selection and one-sample-equivalent design decisions
-- causal-genomics/colocalization-analysis - Per-locus shared-causal evidence complementary to HESS local h2
-- causal-genomics/fine-mapping - Credible-set construction at high-h2 HESS loci
-- causal-genomics/pleiotropy-detection - Cross-trait pleiotropy via LCV / LHC-MR using LDSC outputs
-- causal-genomics/genomic-sem - Genomic SEM extends LDSC rg to multivariate structural models
-- causal-genomics/transcriptome-wide-association - TWAS uses partitioned-h2 weights for gene-level testing
-- atac-seq/differential-accessibility - Per-cell-type chromatin annotations as S-LDSC input
-- atac-seq/single-cell-atac - scATAC peaks per cluster as Finucane 2018 .ldcts annotations
-- chip-seq/peak-calling - ENCODE / Roadmap chromatin marks for cell-type prioritization
-- population-genetics/association-testing - GWAS source summary statistics for LDSC munging
-- population-genetics/linkage-disequilibrium - LD reference panels for HESS / coloc.susie
-- workflows/gwas-pipeline - Upstream GWAS pipeline feeding sumstats to LDSC
+Related Skills are listed in `usage-guide.md`.
