@@ -30,8 +30,12 @@ fasterq-dump "${SRR}" \
     --skip-technical
 
 echo
-echo "=== pigz compression (fasterq-dump does NOT compress) ==="
-pigz -p "${THREADS}" "${OUT}/${SRR}"_*.fastq
+echo "=== compression (fasterq-dump does NOT compress; pigz has no Windows build) ==="
+if command -v pigz >/dev/null 2>&1; then
+    pigz -p "${THREADS}" "${OUT}/${SRR}"_*.fastq
+else
+    gzip "${OUT}/${SRR}"_*.fastq
+fi
 
 echo
 echo "Files:"
