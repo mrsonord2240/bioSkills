@@ -45,7 +45,7 @@ title = safe_get(citation, 'Article', 'ArticleTitle', default='?')
 journal = safe_get(citation, 'Article', 'Journal', 'Title', default='?')
 mesh_descriptors = [m['DescriptorName'] for m in citation.get('MeshHeadingList', [])]
 grants = citation.get('Article', {}).get('GrantList', [])
-pmc_id = next((id['#text'] for id in article.get('PubmedData', {}).get('ArticleIdList', [])
+pmc_id = next((str(id) for id in article.get('PubmedData', {}).get('ArticleIdList', [])
                if hasattr(id, 'attributes') and id.attributes.get('IdType') == 'pmc'), None)
 print(f'  Title: {title}')
 print(f'  Journal: {journal}')

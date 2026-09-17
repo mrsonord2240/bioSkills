@@ -10,11 +10,7 @@ Retrieve full records (`EFetch`) or lightweight document summaries (`ESummary`) 
 pip install biopython
 ```
 
-```python
-from Bio import Entrez, SeqIO
-Entrez.email = 'researcher@institution.edu'
-Entrez.api_key = 'optional_api_key'  # raises rate to 10 req/sec
-```
+See SKILL.md's "Required Setup" section for the `Entrez.email`/`api_key` setup NCBI requires.
 
 ## Quick Start
 
@@ -46,25 +42,7 @@ Entrez.api_key = 'optional_api_key'  # raises rate to 10 req/sec
 
 > "Convert these SRA UIDs to SRR run accessions plus Bases/Spots/AvgLength metrics using EFetch with rettype='runinfo'. Parse the CSV and return as a DataFrame."
 
-## What the Agent Will Do
-
-1. Identify whether the request needs full record content (EFetch) or only metadata (ESummary).
-2. Choose the `(rettype, retmode)` triple appropriate for the source database -- never default-guess.
-3. For modern records, always pass `accession.version` instead of legacy GI numbers.
-4. For WGS or assembly records, use `rettype='gbwithparts'` to inline the sequence.
-5. Parse results with `SeqIO` (sequences) or `Entrez.read()` (XML); use `.get()` defensively for nested XML fields.
-6. Sniff the response start (`LOCUS`, `>`, `<?xml`) before parsing -- guard against HTML error pages.
-7. Respect rate limits (0.34s no key, 0.10s with key) and chunk batches to fit URL length limits.
-
-## Tips
-
-- ESummary is 5-10x cheaper than EFetch for metadata-only work. Always reach for it first when sequence content isn't needed.
-- A bare accession `NM_007294` resolves to whatever version is current; this is fine for exploration but breaks reproducibility. Always pin `.version` for published analyses.
-- For PubMed records, `rettype='medline'` parsed with `Bio.Medline.parse()` is more schema-stable than the XML route -- preferred for long-lived parsers.
-- The default `gb` rettype on a WGS / assembly record returns the CONTIG join() statement but NOT the sequence. Use `gbwithparts` for assemblies; check `len(record.seq)` after parsing.
-- EFetch URL has a practical ~2000 char limit; for >100 IDs in a comma-joined batch, either chunk or use the history server (push IDs via `Entrez.epost` first; see `batch-downloads`).
-- For taxonomy: when given a species name, ESearch the `taxonomy` db to get the TXID, then EFetch with `db=taxonomy` for the lineage -- never assume a TXID from memory.
-- XML schema drift is real. Pin BioPython in production and expect to update parsers when NCBI changes the schema (no version notice is given).
+For the agent's decision process, the rettype/retmode decision matrix, GI-deprecation rules, the `gbwithparts` WGS trap, XML schema-drift guardrails, and rate-limit/chunking mechanics, see SKILL.md -- summarized once there, not repeated here.
 
 ## Related Skills
 
