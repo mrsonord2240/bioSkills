@@ -10,6 +10,14 @@ license: MIT
 
 Reference examples tested with: ReactomePA 1.54+, reactome.db 1.95+, clusterProfiler 4.18+.
 
+```r
+if (!require('BiocManager', quietly = TRUE))
+    install.packages('BiocManager')
+
+BiocManager::install(c('ReactomePA', 'reactome.db', 'org.Hs.eg.db', 'clusterProfiler'))
+BiocManager::install('ReactomeGSA')   # only for comparative / multi-omics analysis
+```
+
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
 
@@ -138,6 +146,26 @@ sc  <- analyse_sc_clusters(seurat_obj, use_interactors=FALSE)    # per-cluster s
 ```
 
 Use ReactomePA for "is this one list over-represented / coordinately changed"; use ReactomeGSA for "which pathways DIFFER between conditions / omics / clusters".
+
+## Understanding Results
+
+`enrichResult` (ORA) columns:
+
+| Column | Description |
+|--------|-------------|
+| ID | Reactome stable id (R-HSA-XXXXX) |
+| Description | Pathway name |
+| GeneRatio | query genes in the pathway / query genes mapped to any pathway |
+| BgRatio | pathway genes in the universe / universe genes mapped (denominator ~11,230 if no universe passed) |
+| RichFactor | query genes in the pathway / total genes in the pathway |
+| FoldEnrichment | observed / expected fraction - read effect size here, do not compute it by hand |
+| zScore | standardized enrichment score |
+| p.adjust | BH-adjusted p-value (report this, not raw pvalue) |
+| qvalue | q-value |
+| geneID | genes in the pathway (symbols when readable=TRUE) |
+| Count | number of query genes in the pathway |
+
+`gseaResult` (GSEA) adds `setSize`, `enrichmentScore`, `NES`, `rank`, `leading_edge`, and `core_enrichment`.
 
 ## Per-Method Failure Modes
 
