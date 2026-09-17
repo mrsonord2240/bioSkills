@@ -87,6 +87,8 @@ Without an exposure-mediator interaction term, INTref = INTmed = 0 and the decom
 | Longitudinal with time-varying confounding | g-formula via `CMAverse::cmest(estimation='gformula')` OR `gfoRmula` package |
 | Exposure-induced confounder of M-Y exists | Interventional indirect effects (Vansteelandt & Daniel 2017); `CMAverse::cmest(estimation='msm')` |
 
+BAMA vs HIMA2 for high-D mediators: prefer BAMA over HIMA2 when (1) strong prior information on mediator effects is available, (2) the candidate panel is moderately sized (~5k mediators), and (3) the compute budget allows 1-6h MCMC; otherwise HIMA2 is faster with comparable FDR control.
+
 ## Sequential Ignorability and Why It Always Needs Sensitivity
 
 Observational mediation requires three no-unmeasured-confounding assumptions. The third (M-Y unmeasured confounder, after conditioning on E) is the most common violator in genomic mediation because biological confounders (cell composition, batch effects, technical mediators) frequently affect both M and Y.
@@ -154,6 +156,8 @@ result <- hima(as.formula(paste('outcome ~ exposure + age + sex +',
 
 **Fix:** Set `mediator.type='gaussian'` for continuous (e.g., methylation beta, log-CPM expression), `'negbin'` for raw count (RNA-seq), `'compositional'` for relative-abundance microbiome. Verify by `?hima` in the installed version since the catalogue of mediator types has expanded across releases.
 
+Cell composition is the canonical unmeasured confounder in EWAS mediation: include estimated cell proportions (Houseman or reference-free RPC method) as covariates -- in the formula interface, add them as RHS terms alongside `age + sex + ...`; in `hima_classic()`, pass them in both `COV.XM` and `COV.MY`.
+
 ### Bootstrap iterations too low
 
 **Trigger:** `sims=100` or `sims=500` in early exploration left in for the final report.
@@ -162,7 +166,7 @@ result <- hima(as.formula(paste('outcome ~ exposure + age + sex +',
 
 **Symptom:** Re-running `mediate()` with a different `set.seed()` gives substantially different CI bounds.
 
-**Fix:** `sims=1000` minimum for any reported result; `sims=5000` for publication; `sims=10000` if proximity to zero matters. BCa CIs (`boot.ci.type='bca'` in `mediate()`) are slightly more accurate than percentile CIs near zero but require more sims for stability.
+**Fix:** `sims=1000` minimum for any reported result; `sims=5000` for publication; `sims=10000` if proximity to zero matters. BCa CIs (`boot.ci.type='bca'` in `mediate()` -- lowercase `'bca'`, not `'BCa'`) are slightly more accurate than percentile CIs near zero but require more sims for stability.
 
 ### Two-step MR instrument independence
 
@@ -219,7 +223,7 @@ Reference: AGReMA guideline (Lee H et al 2021 JAMA 326:1045) and MacKinnon 2008 
 | "Exposure-induced confounder of M-Y?" | DAG drawn; if L present, switch to `CMAverse::cmest(estimation='msm')` for interventional indirect effect (Vansteelandt & Daniel 2017) |
 | "Why this bootstrap method?" | BCa with sims=5000 for publication; percentile fallback when BCa fails to converge (acceleration estimate unstable at boundary) |
 | "Why was MR-mediation not done?" | If valid IVs for E and M exist: two-step MR or MVMR-mediation done (see code below); if not, documented absence of trans-instruments |
-| "Mediator measured with error?" | Regression calibration (Carroll 2006 Measurement Error in Nonlinear Models) OR sensitivity analysis assuming reliability r = 0.7 (Valeri & VanderWeele 2014) |
+| "Mediator measured with error?" | When mediator reliability r < 0.9, the indirect effect is attenuated. Regression calibration (Carroll 2006 Measurement Error in Nonlinear Models): replace the observed mediator with its conditional expectation given exposure and covariates. OR run a sensitivity analysis at fixed reliability r = 0.7 (Valeri L, Lin X & VanderWeele TJ 2014 Stat Med 33:4875) |
 | "Why HIMA2 not BAMA?" | HIMA2 = frequentist + FDR control + faster; BAMA = Bayesian when prior information is available; sample-size justification given against simulation rule-of-thumb |
 | "Proportion mediated unstable?" | When |total| < 2*SE(total), proportion-mediated CI is unreliable (denominator near zero); report indirect effect alone with absolute effect size |
 
@@ -426,21 +430,21 @@ acme_lower_rr <- exp(med_result$d0.ci[1])
 evalues.RR(acme_rr, lo=acme_lower_rr, hi=NULL)
 ```
 
-For binary outcomes, convert ACME on probability scale to RR; for continuous, use `evalues.OLS()` with the standardized indirect effect. E-value > 2 indicates a confounder would need >2-fold associations with both M and Y to nullify the indirect effect (Smith & VanderWeele 2019).
+For binary outcomes, convert ACME on probability scale to RR; for continuous, use `evalues.OLS()` with the standardized indirect effect. E-value > 2 indicates a confounder would need >2-fold associations with both M and Y to nullify the indirect effect (Smith & VanderWeele 2019). By hand: convert ACME to a risk-ratio bound (`acme_rr = exp(ACME)` on the log scale for continuous outcomes, or VanderWeele's marginal RR conversion for binary), then `E = RR + sqrt(RR * (RR - 1))`; apply the same formula to the CI bound closer to the null for the E-value of the CI. `EValue::evalues.OLS()` automates this for linear outcomes.
 
 ## Tool Install Notes
 
-| Package | Source | Notes |
-|---------|--------|-------|
-| mediation | CRAN | `install.packages('mediation')`; actively maintained (Imai group) |
-| CMAverse | GitHub | `remotes::install_github('BS1125/CMAverse')`; NOT on CRAN; 6 estimators in one interface |
-| HIMA | CRAN | `BiocManager::install('qvalue')` then `install.packages('HIMA')`; back on CRAN with a lighter dependency list (`ncvreg`, `glmnet`, Bioconductor `qvalue`), no `scalreg` needed; confirmed on HIMA 2.3.4 (checked 2026-09-17) |
-| bama | CRAN | `install.packages('bama')`; Bayesian; slow MCMC |
-| causalweight | CRAN | `install.packages('causalweight')`; medDML for double-ML mediation |
-| EValue | CRAN | `install.packages('EValue')`; for mediational E-values |
-| TwoSampleMR | r-universe | See causal-genomics/mendelian-randomization for setup |
-| MVMR | r-universe | `remotes::install_github('WSpiller/MVMR')`; for MVMR-mediation |
-| gfoRmula | CRAN | For longitudinal / time-varying confounders |
+| Package | Source | Notes | Compute time |
+|---------|--------|-------|--------------|
+| mediation | CRAN | `install.packages('mediation')`; actively maintained (Imai group) | Single mediator, 5000 bootstrap sims: minutes on a laptop |
+| CMAverse | GitHub | `remotes::install_github('BS1125/CMAverse')`; NOT on CRAN; 6 estimators in one interface | Minutes for `nboot=1000` on a single dataset |
+| HIMA | CRAN | `BiocManager::install('qvalue')` then `install.packages('HIMA')`; back on CRAN with a lighter dependency list (`ncvreg`, `glmnet`, Bioconductor `qvalue`), no `scalreg` needed; confirmed on HIMA 2.3.4 (checked 2026-09-17) | ~500k CpGs, n=500: 30-60 min with `parallel=TRUE, ncore=8` |
+| bama | CRAN | `install.packages('bama')`; Bayesian; slow MCMC | 1-6 hours depending on chain length |
+| causalweight | CRAN | `install.packages('causalweight')`; medDML for double-ML mediation | Cross-fitted random forests: 10-30 min for n=2000 |
+| EValue | CRAN | `install.packages('EValue')`; for mediational E-values | Seconds |
+| TwoSampleMR | r-universe | See causal-genomics/mendelian-randomization for setup | Depends on instrument count and OpenGWAS API latency |
+| MVMR | r-universe | `remotes::install_github('WSpiller/MVMR')`; for MVMR-mediation | Seconds to minutes |
+| gfoRmula | CRAN | For longitudinal / time-varying confounders | Minutes to tens of minutes, scales with timepoints |
 
 ## Common Errors
 
