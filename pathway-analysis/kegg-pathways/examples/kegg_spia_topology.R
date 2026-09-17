@@ -28,16 +28,29 @@ de_vec  <- de_vec[!duplicated(names(de_vec))]
 universe <- bitr(de$gene[!is.na(de$pvalue)], fromType = 'SYMBOL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db)$ENTREZID
 
 # Direct SPIA against KEGG (organism code; signaling maps only)
+set.seed(123)   # SPIA's pPERT is a stochastic bootstrap; fix the seed for reproducibility
 res <- spia(de = de_vec, all = universe, organism = 'hsa', nB = n_boot, plots = FALSE)
 # output cols: Name, ID, pSize, NDE, pNDE, tA, pPERT, pG, pGFdr, pGFWER, Status, KEGGLINK
 cat('SPIA scored', nrow(res), 'pathways;', sum(res$pGFdr < 0.05), 'significant after FDR\n')
 
 # graphite route: harmonizes node IDs, resolves complexes/families, removes compounds,
-# and runs SPIA over the cleaned graphs (also works on Reactome topology)
+# and runs SPIA over the cleaned graphs (also works on Reactome topology).
+# runSPIA checks `datasetName(pathwaySetName) %in% dir()`, and bare dir() lists only the
+# CURRENT WORKING DIRECTORY's filenames -- an absolute/tempdir() pathwaySetName can never
+# match, so prepareSPIA/runSPIA must both run with a RELATIVE name from a matching setwd().
+# convertIdentifiers() also prefixes graphite's node IDs ('ENTREZID:1017'), so de_vec/all
+# need the same prefix or every ID join returns 0 rows even once the path bug is worked
+# around. Confirmed against installed graphite 1.52.0 and current Bioconductor-release
+# graphite 1.56.0 source.
 db <- pathways('hsapiens', 'kegg')
 db <- convertIdentifiers(db, 'ENTREZID')
-spia_set <- file.path(tempdir(), 'kegg_hsa_spia')
-prepareSPIA(db, spia_set)
-gr <- runSPIA(de = de_vec, all = universe, spia_set)
+de_vec_gr   <- setNames(de_vec, paste0('ENTREZID:', names(de_vec)))
+universe_gr <- paste0('ENTREZID:', universe)
+owd <- getwd(); setwd(tempdir())
+prepareSPIA(db, 'kegg_hsa_spia')              # writes kegg_hsa_spiaSPIA.RData into tempdir()
+set.seed(123)   # graphite's runSPIA bootstraps pPERT the same way spia() does
+gr <- runSPIA(de = de_vec_gr, all = universe_gr, 'kegg_hsa_spia')
+setwd(owd)
+cat('graphite runSPIA scored', nrow(gr), 'pathways;', sum(gr$pGFdr < 0.05), 'significant after FDR\n')
 
 write.csv(res, file.path(tempdir(), 'spia_results.csv'), row.names = FALSE)
