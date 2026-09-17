@@ -1,0 +1,15 @@
+# Every text file here is LF, in the repository and in the working tree.
+#
+# Skills ship runnable code -- 222 .sh, 412 .py, 206 .R, plus workflow files -- that users execute
+# on Linux, in WSL and in containers. With no attributes, a Windows checkout under
+# core.autocrlf=true rewrote all of them to CRLF and every shell script then failed with
+# "$'\r': command not found", including the smoke test a Skill tells users to run to confirm their
+# install. Found by the bio-causal-genomics-heritability-partitioning re-audit, 2026-09-17.
+#
+# Every blob in this repository was already LF when this file was added, so it changes no content:
+# it stops the checkout from corrupting what is committed.
+* text=auto eol=lf
+
+# Detected as binary on content today; declared so it stays that way.
+*.png binary
+*.pdf binary
