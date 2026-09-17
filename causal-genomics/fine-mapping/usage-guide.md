@@ -93,18 +93,7 @@ Tell the AI agent what to do in natural language:
 7. **Report** - Number of credible sets, size of each, purity, top PIP variant per set, and the operational caveat that the credible set is the unit of inference
 8. **Optionally** - Feed into coloc.susie for colocalization; annotate variants with VEP / Ensembl
 
-## Tips
-
-- **In-sample LD beats reference LD** - When cohort genotypes are accessible, compute LD on the GWAS samples directly. External LD is the dominant failure mode.
-- **Always run estimate_s_rss** - Lambda < 0.05 is acceptable; > 0.10 means the LD reference is wrong for this cohort.
-- **Credible set is the unit of inference** - Report the set, its size, and its purity. The top PIP variant within a set is a candidate, not a conclusion.
-- **L is cheap to increase** - SuSiE prunes unused effects; raise L until `sum(!fit$sets$pruned) < L`.
-- **Purity filter** - Sets with `min_abs_corr < 0.5` (r2 < 0.25) are LD-confounded; drop or flag.
-- **PolyFun argument** - Per-SNP causal priors go to `prior_weights`, NOT `prior_variance`. Verify with `?susie_rss`.
-- **Non-sparse loci** - At biobank scale, SuSiE-inf is the default; vanilla SuSiE over-states credible-set count.
-- **HLA / chr8 inversion** - Document the caveat; standard methods are unreliable. Use HLA-specific imputation for HLA.
-- **PSD violations** - Add `diag(1e-4)` to the LD matrix if eigenvalues are slightly negative from finite-precision storage; or use `Matrix::nearPD`.
-- **Cross-ancestry** - SuSiEx joint fine-mapping shrinks credible sets when AFR or East Asian populations contribute (shorter LD blocks resolve EUR-tagged regions).
+Tips on LD reference choice, credible-set interpretation, L selection, purity filtering, PolyFun's `prior_weights` argument, non-sparse loci, HLA, PSD violations, and cross-ancestry gains are all covered in `SKILL.md` (Per-Tool Failure Modes, Quantitative Thresholds, Cross-Ancestry Fine-Mapping with SuSiEx, and Common Errors).
 
 ## Related Skills
 
