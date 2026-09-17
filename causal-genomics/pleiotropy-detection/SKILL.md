@@ -251,6 +251,17 @@ CAUSE requires sumstats from both exposure and outcome GWAS in matched effect-al
 - `loss.function = 'tukey'` (more aggressive; downweights extreme outliers more; choose when many obvious outliers suspected)
 - `loss.function = 'l2'` (non-robust; equivalent to weighted least squares; do not use when UHP suspected)
 
+These are not top-level arguments to `TwoSampleMR::mr_raps()` -- its signature is
+`mr_raps(b_exp, b_out, se_exp, se_out, parameters = default_parameters())`, so pass them nested:
+
+```r
+TwoSampleMR::mr_raps(b_exp = dat$beta.exposure, b_out = dat$beta.outcome,
+                      se_exp = dat$se.exposure, se_out = dat$se.outcome,
+                      parameters = list(over.dispersion = TRUE, loss.function = 'huber', shrinkage = FALSE))
+```
+
+Calling with bare `over.dispersion = TRUE, loss.function = 'huber'` throws `unused arguments`.
+
 Tukey is preferable when leave-one-out reveals 2+ SNPs single-handedly shifting the IVW estimate by > 1 SE.
 
 ## MR-Clust for Mechanism Heterogeneity
