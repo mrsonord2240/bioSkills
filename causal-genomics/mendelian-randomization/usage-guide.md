@@ -8,28 +8,8 @@ This skill covers the full sensitivity battery (IVW, MR-Egger, weighted median/m
 
 ## Prerequisites
 
-```r
-install.packages(c('remotes', 'MendelianRandomization', 'MVMR', 'coloc', 'simex'))
-remotes::install_github('MRCIEU/TwoSampleMR')        # 0.6.0+ for JWT auth
-remotes::install_github('MRCIEU/ieugwasr')           # 1.0+ for JWT auth
-remotes::install_github('rondolab/MR-PRESSO')
-remotes::install_github('qingyuanzhao/mr.raps')      # CRAN-archived 2025-03-01
-remotes::install_github('jean997/cause')
-remotes::install_github('cnfoley/mrclust')
-remotes::install_github('LizaDarrous/lhcMR')
-remotes::install_github('n-mounier/MRlap')           # overlap + winner's curse + weak-IV joint correction
-remotes::install_github('HDTian/DRMR')               # non-linear MR (with Hamilton 2023 caveat)
-```
-
-OpenGWAS API: OAuth was deprecated May 2024; JWT token required. Generate at api.opengwas.io, set `OPENGWAS_JWT=<token>` in `~/.Renviron`, restart R, verify with `ieugwasr::get_opengwas_jwt()`. For production, skip the API entirely: use `ld_clump_local()` with local 1KG bfile.
-
-For local LD clumping (preferred since OpenGWAS rate limits tightened in 2024):
-
-```bash
-# plink2 binary + 1000 Genomes EUR reference panel
-# https://www.cog-genomics.org/plink/2.0/
-# 1KG bfile prebuilt at https://mrcieu.github.io/ieugwasr/
-```
+See SKILL.md's "Tool Installation Notes" for the install commands (CRAN + GitHub packages) and
+"Common Errors" for the OpenGWAS JWT-token setup and local-clumping fallback.
 
 ## Quick Start
 
@@ -79,38 +59,11 @@ Tell the AI agent what to do:
 
 ## What the Agent Will Do
 
-1. Diagnose the experimental regime: one-sample, two-sample independent, partial overlap, drug-target, polygenic, or non-linear
-2. Read exposure GWAS, select genome-wide significant SNPs (P < 5e-8), compute F-statistics from exposure (not outcome)
-3. Clump instruments locally (plink + 1KG bfile preferred); cis-MR uses r2 < 0.1 within window, polygenic MR uses r2 < 0.001 across 10 Mb
-4. Read outcome GWAS, extract matched SNPs
-5. Harmonise alleles with `action = 2` (infer from EAF; drops MAF~0.5 palindromes) and document drops
-6. Run IVW (random effects) as primary, plus MR-Egger (with `I^2_GX` check + SIMEX if needed), weighted median, weighted mode, MR-RAPS
-7. Run MR-PRESSO with NbDistribution >= 10000 for global, outlier, and distortion tests
-8. Run CAUSE if exposure is polygenic and >= 100 sig SNPs; report ELPD difference
-9. For multivariable designs, run MVMR with `strength_mvmr()` per-exposure conditional F
-10. Steiger directionality test (with the Lutz 2022 confounder caveat noted)
-11. Generate scatter, forest, leave-one-out, and funnel plots
-12. Produce STROBE-MR-compliant report with all 20 items and explicit causal-claim language
-
-## Tips
-
-- Compute F-statistic from EXPOSURE GWAS, not outcome; using outcome F is a common error that produces meaningless instrument-strength claims
-- MR-RAPS CRAN-archived 2025-03-01; install the GitHub source `qingyuanzhao/mr.raps`. TwoSampleMR's `mr_raps()` wrapper is a thin caller into that package; the `MendelianRandomization` package does NOT export `mr_raps()`
-- OpenGWAS authentication has tightened repeatedly since 2024; use local plink + 1KG bfile via `ieugwasr::ld_clump()` for production work
-- When both ends use UK Biobank, treat as one-sample-equivalent: weak-IV bias is TOWARD the observational estimate, not the null
-- Palindromic SNP handling: `action = 2` drops MAF~0.5 palindromes (default); `action = 3` drops all palindromes (most conservative); never `action = 1` unless strand convention is guaranteed
-- MR-Egger requires `I^2_GX >= 0.9` for NOME; below that apply SIMEX correction or downgrade Egger to exploratory
-- CAUSE needs >= 100 significant SNPs; for sparse exposures use IVW + Egger + MR-PRESSO + LCV instead
-- MVMR: report CONDITIONAL F per exposure, not total F; total F can be high while one exposure's conditional F is below 10
-- CAUSE explicitly models correlated horizontal pleiotropy; use it when prior on CHP is high (BMI / lipids / smoking on cardiometabolic outcomes)
-- Bonferroni-correct when running pheWAS-MR across many outcomes; FDR only for explicitly exploratory screens
-- Report all 20 STROBE-MR items (Skrivankova 2021); missing items trigger first-pass desk rejection at most epi/genetics journals since 2022
-- The Steiger filter has a known failure mode under unmeasured confounding (Lutz 2022 Genet Epidemiol 46:139); cross-validate direction with bidirectional MR or LHC-MR, not Steiger alone
-- MRlap (Mounier 2023) jointly corrects sample overlap, winner's curse, and weak-IV bias from sumstats; prefer when (a) any sample overlap suspected, (b) only sumstats available, (c) UKB-on-UKB or FinnGen-on-FinnGen designs
-- For non-linear MR (J-curves, U-shapes): Hamilton 2023 medRxiv 23293658 shows BOTH doubly-ranked and residual stratification produce stratum-specific bias from age/sex effects; pre-specify the non-linear hypothesis, run both methods side-by-side, report negative-control outcomes (genotype vs sex within strata)
-- One-sample F-statistic floor: F >= 20 (not 10); jackknife SE preferred over analytic; never run exposure and outcome GWAS on the same individuals and claim two-sample (Barry 2021 PLoS Genet 17:e1009703 collider bias)
-- Binary outcomes: MR returns the population-averaged log-OR, NOT the conditional log-OR; for common diseases OR diverges from RR/HR (Burgess 2017 Stat Methods Med Res 26:2333); phrase as "per 1-SD increase in genetically-predicted X, OR for Y = ..."
-- MVMR with conditional F < 10: switch from `ivw_mvmr()` to `qhet_mvmr(r_input, pcor, CI = TRUE, iterations = 1000)` (Sanderson 2021 Stat Med 40:5434) which Q-minimizes rather than weighting by inverse variance
+Diagnoses the experimental regime (one-sample, two-sample, partial overlap, drug-target, polygenic,
+non-linear) per SKILL.md's "Decision Tree by Experimental Scenario", then runs that regime's primary
+method plus its sensitivity battery per "TwoSampleMR Standard Workflow" / "MR-PRESSO Outlier
+Detection" / "CAUSE" / "MVMR with Conditional F" / "Bidirectional and Steiger", and reports per
+"STROBE-MR Reporting".
 
 ## Related Skills
 

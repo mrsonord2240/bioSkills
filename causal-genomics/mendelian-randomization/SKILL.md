@@ -54,7 +54,7 @@ Methodology evolves; benchmark consensus shifts every 2-3 years. Verify against 
 | Scenario | Primary method | Sensitivity battery | Why |
 |----------|----------------|----------------------|-----|
 | Standard two-sample, independent cohorts, polygenic exposure | IVW (random) | Egger + weighted median + MR-PRESSO + MR-RAPS + Steiger | Default; covers balanced, directional, outlier, weak-IV regimes |
-| One-sample (e.g. UK Biobank both ends) | IVW with weak-IV-aware (MR-RAPS) | Egger + LCV + jackknife SE | One-sample F-stat floor shifts to F >= 20; jackknife SE preferred over analytic at one-sample scale; do NOT run exposure GWAS and outcome GWAS on the same individuals then claim two-sample (Barry 2021 PLoS Genet 17:e1009703 collider bias); within-stratum MR (e.g. "MR among smokers") risks collider bias from the stratification variable |
+| One-sample (e.g. UK Biobank both ends) | IVW, with MR-RAPS as sensitivity if mean F is borderline | Egger + LCV + jackknife SE + MRlap/Burgess-2016 overlap correction | One-sample F-stat floor shifts to F >= 20; jackknife SE preferred over analytic at one-sample scale; do NOT run exposure GWAS and outcome GWAS on the same individuals then claim two-sample (Barry 2021 PLoS Genet 17:e1009703 collider bias); within-stratum MR (e.g. "MR among smokers") risks collider bias from the stratification variable; MR-RAPS corrects weak-IV bias only and does NOT correct sample-overlap/confounding bias even when F is already high (see Operational rule below) |
 | Partial sample overlap (UKB exposure + UKB outcome) | MR-RAPS with overlap correction | Sample-overlap-adjusted IVW (Burgess 2016 Genet Epidemiol 40:597) | Bias is intermediate, proportional to z-score correlation |
 | Drug-target / cis-MR (cis-pQTL, cis-eQTL) | IVW restricted to cis window | Colocalization PP.H4 + LD-prune within window | Exclusion restriction relaxed because the protein/transcript directly mediates effect (Schmidt 2020 Nat Commun 11:3255) |
 | MVMR for measured pleiotropy (e.g. LDL adjusted for HDL/TG) | `MVMR::ivw_mvmr` | Conditional F + Q_A heterogeneity | Required when exposures correlate via shared SNPs |
@@ -73,7 +73,7 @@ Methodology evolves; benchmark consensus shifts every 2-3 years. Verify against 
 | Two-sample non-overlapping, F<10 | Toward null | Independent samples decouple residuals (Burgess 2011 IJE 40:755) |
 | Two-sample with partial overlap | Intermediate; proportional to overlap fraction and z-score correlation | Burgess 2016 Genet Epidemiol 40:597; correction available |
 
-**Operational rule:** Whenever both GWAS came from UK Biobank (or any single biobank), treat the analysis as one-sample-equivalent and prefer MR-RAPS as primary. Treating it as "two-sample because separate GWAS files" is a common error and produces overestimates.
+**Operational rule:** Whenever both GWAS came from UK Biobank (or any single biobank), treat the analysis as one-sample-equivalent. MR-RAPS corrects weak-instrument bias in this regime; it does NOT correct the separate sample-overlap/confounding bias that one-sample-equivalent designs also carry, and the two can coexist even when F is well above the one-sample floor (F >= 20) -- a real UKB-on-UKB run at mean F=44.6 with a planted null effect showed naive IVW biased (b=0.18) and MR-RAPS no better (b=0.196), because the bias source was sample-overlap confounding, not weak instruments. Use MR-RAPS when F is borderline; use MRlap (below) or Burgess 2016 overlap-corrected IVW whenever overlap/confounding is suspected, regardless of F. Treating it as "two-sample because separate GWAS files" is a common error and produces overestimates.
 
 ### MRlap: unified correction for sample overlap + winner's curse + weak instruments
 
@@ -119,7 +119,7 @@ Collider bias when conditioning on a collider variable (Coscia 2022 Eur J Epidem
 
 **Symptom:** Egger intercept p < 0.05 with non-zero estimate; IVW differs from weighted median; MR-PRESSO global test p < 0.05.
 
-**Fix:** Use Egger (if `I^2_GX >= 0.9` -- otherwise SIMEX-correct via the `simex` package applied to the Egger fit, treating `se.exposure` as measurement error in `beta.exposure`); cross-check with weighted median, MR-PRESSO, and CAUSE; report IVW only as one of a panel, never alone. The `MendelianRandomization::mr_egger()` function accepts `distribution='normal'` and reports the `I.sq` (I^2_GX) NOME diagnostic but applies no NOME/SIMEX correction to the estimate itself and does NOT expose a SIMEX wrapper.
+**Fix:** Use Egger (if `I^2_GX >= 0.9` -- otherwise SIMEX-correct; code and caveats under "NOME violation invalidating Egger" below); cross-check with weighted median, MR-PRESSO, and CAUSE; report IVW only as one of a panel, never alone. The `MendelianRandomization::mr_egger()` function accepts `distribution='normal'` and reports the `I.sq` (I^2_GX) NOME diagnostic but applies no NOME/SIMEX correction to the estimate itself and does NOT expose a SIMEX wrapper.
 
 ### Weak-instrument bias direction
 
@@ -150,6 +150,27 @@ Collider bias when conditioning on a collider variable (Coscia 2022 Eur J Epidem
 **Symptom:** `mr_pleiotropy_test()` Egger estimate disagrees with weighted median in magnitude but agrees in direction; `Isq()` function returns <0.9.
 
 **Fix:** Compute `Isq(beta_X, se_X)` (Bowden 2016 IJE 45:1961); if <0.9, apply SIMEX correction via `simex` package or report Egger as exploratory only. The MendelianRandomization package's `mr_egger()` reports the `I.sq` (I^2_GX) NOME diagnostic but does not itself apply a NOME/SIMEX correction; SIMEX must be run separately.
+
+```r
+library(simex)
+
+# Precompute the weights vector rather than dividing a data-frame column in-formula:
+# simex() refits the model internally on perturbed data and cannot re-evaluate
+# `1 / se.outcome^2` against its own working frame, which has no se.outcome column --
+# that in-formula form crashes with "object 'se.outcome' not found" inside simex()'s
+# refit (simex 1.8). Precomputing the vector and passing a fully-qualified `data = dat`
+# avoids it.
+w <- 1 / dat$se.outcome^2
+egger_lm <- lm(beta.outcome ~ beta.exposure, weights = w, data = dat, x = TRUE, y = TRUE)
+
+egger_simex <- simex(model = egger_lm, SIMEXvariable = 'beta.exposure',
+                      measurement.error = dat$se.exposure,
+                      lambda = seq(0.5, 2, 0.5), B = 1000,
+                      fitting.method = 'quadratic', asymptotic = FALSE)
+
+cat('SIMEX-corrected slope:', round(coef(egger_simex)['beta.exposure'], 4), '\n')
+cat('Naive Egger slope:   ', round(coef(egger_lm)['beta.exposure'], 4), '\n')
+```
 
 ### Steiger filter false flag under unmeasured confounding
 
@@ -245,6 +266,7 @@ steiger <- directionality_test(dat)            # variance-explained direction
 ```r
 library(MRPRESSO)
 
+set.seed(42)  # mr_presso()'s global/outlier tests are Monte-Carlo; seed for a reproducible p-value
 presso <- mr_presso(
     BetaOutcome = 'beta.outcome', BetaExposure = 'beta.exposure',
     SdOutcome = 'se.outcome', SdExposure = 'se.exposure',
@@ -345,7 +367,7 @@ dir_test <- directionality_test(dat) # global; correct_causal_direction == TRUE 
 | `install.packages("mr.raps")` fails | CRAN-archived 2025-03-01 | `remotes::install_github('qingyuanzhao/mr.raps')`; TwoSampleMR's `mr_raps()` wrapper internally calls this package |
 | MR-PRESSO returns NA p-value | `NbDistribution` too small; signal too thin | Increase to >= 10000; check that >= 4 SNPs remain after harmonization |
 | Egger intercept "highly significant" with 5 SNPs | Underpowered Egger over-fits the slope | Egger needs >= 10 SNPs; below that, intercept is unreliable |
-| Sample-overlap correction ignored | Treating UKB-on-UKB as two-sample | Apply Burgess 2016 correction; or use MR-RAPS |
+| Sample-overlap correction ignored | Treating UKB-on-UKB as two-sample | Apply Burgess 2016 correction or MRlap -- MR-RAPS alone does not fix overlap-driven confounding (see Operational rule above), only weak-instrument bias |
 | `cause()` runs forever | Default model fit on too many SNPs | Filter to sig SNPs (P < 1e-3) before `cause()`; `est_cause_params` uses the random subset |
 | MAF column missing -> harmonise action=2 silently downgrades | EAF unavailable | Provide EAF or use `action = 3` and document the loss |
 
@@ -353,7 +375,7 @@ dir_test <- directionality_test(dat) # global; correct_causal_direction == TRUE 
 
 ```r
 # CRAN-stable
-install.packages(c('remotes', 'MendelianRandomization', 'MVMR', 'coloc'))
+install.packages(c('remotes', 'MendelianRandomization', 'MVMR', 'coloc', 'simex'))
 
 # GitHub-only or recently archived
 remotes::install_github('MRCIEU/TwoSampleMR')          # primary orchestrator
@@ -367,7 +389,7 @@ remotes::install_github('HDTian/DRMR')                 # doubly-ranked stratific
 remotes::install_github('n-mounier/MRlap')             # joint overlap + winner's-curse + weak-IV correction
 ```
 
-`TwoSampleMR::mr_raps()` is a thin wrapper that calls `mr.raps::mr.raps()` under the hood; the GitHub `mr.raps` install above is therefore required. The `MendelianRandomization` package does NOT export `mr_raps()` (verify with `ls('package:MendelianRandomization')`); only TwoSampleMR offers a MR-RAPS entry point. For local clumping, install plink2 and download a 1KG EUR (or matched-ancestry) reference bfile.
+`TwoSampleMR::mr_raps()` is a thin wrapper that calls `mr.raps::mr.raps()` under the hood; the GitHub `mr.raps` install above is therefore required. The `MendelianRandomization` package does NOT export `mr_raps()` (verify with `ls('package:MendelianRandomization')`); only TwoSampleMR offers a MR-RAPS entry point. For local clumping, install plink2 (https://www.cog-genomics.org/plink/2.0/) and download a 1KG EUR (or matched-ancestry) reference bfile (prebuilt at https://mrcieu.github.io/ieugwasr/).
 
 ## STROBE-MR Reporting
 
