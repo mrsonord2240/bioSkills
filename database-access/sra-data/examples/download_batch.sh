@@ -27,15 +27,24 @@ while read -r ACC; do
     echo
     echo "[${count}/${total}] ${ACC}"
 
-    # Query ENA portal API for FASTQ URLs + md5
-    META=$(curl -fsS "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=${ACC}&result=read_run&fields=fastq_ftp,fastq_md5,read_count&format=tsv" | tail -1) || {
+    # Query ENA portal API for FASTQ URLs + md5. Locate columns by their documented
+    # field name, not a fixed index: ENA's filereport ALWAYS prepends run_accession as
+    # column 1 regardless of what `fields=` lists, so with fields=fastq_ftp,fastq_md5,
+    # read_count the real data is in columns 2-4, not 1-3 (cut -f1/-f2 silently grabbed
+    # the accession and the URL, one column short -- confirmed against the live API;
+    # fails 100% of the time as a fixed-index cut).
+    RESPONSE=$(curl -fsS "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=${ACC}&result=read_run&fields=fastq_ftp,fastq_md5,read_count&format=tsv") || {
         echo "  ENA portal API failed for ${ACC}"
         echo "${ACC}" >> "${FAILED}"
         continue
     }
+    HEADER=$(echo "${RESPONSE}" | head -1)
+    ROW=$(echo "${RESPONSE}" | tail -1)
+    FTP_COL=$(echo "${HEADER}" | tr '\t' '\n' | grep -nx 'fastq_ftp' | cut -d: -f1)
+    MD5_COL=$(echo "${HEADER}" | tr '\t' '\n' | grep -nx 'fastq_md5' | cut -d: -f1)
 
-    URLS=$(echo "${META}" | cut -f1 | tr ';' '\n')
-    MD5S=$(echo "${META}" | cut -f2 | tr ';' '\n')
+    URLS=$(echo "${ROW}" | cut -f"${FTP_COL}" | tr ';' '\n')
+    MD5S=$(echo "${ROW}" | cut -f"${MD5_COL}" | tr ';' '\n')
     if [ -z "${URLS}" ]; then
         echo "  No FASTQ URLs in ENA mirror for ${ACC}"
         echo "${ACC}" >> "${FAILED}"
