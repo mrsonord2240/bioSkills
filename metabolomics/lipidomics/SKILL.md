@@ -119,12 +119,19 @@ plot_results_volcano(de_results, show.labels = FALSE)
 ```r
 # normalize_istd divides each lipid by the internal standard of its matched class.
 # Requires one labeled IS per class present in the data (e.g. SPLASH/EquiSPLASH covers ~13 classes).
+# data_normalized (used above) ships pre-normalized (PQN, log2); normalize_istd() refuses to run
+# on already-normalized data, so load lipidr's own raw shipped Skyline export instead:
+datadir <- system.file('extdata', package = 'lipidr')
+d_raw <- add_sample_annotation(
+  read_skyline(list.files(datadir, 'A1_data.csv|F1_data.csv|F2_data.csv', full.names = TRUE)),
+  file.path(datadir, 'clin.csv')
+)
 #
 # GUARD (non-negotiable, not optional): normalize_istd() does NOT enforce this. Any class with
 # zero recognized standards passes through with a silent correction factor of 1 -- i.e. completely
 # uncorrected data reported as if it had been normalized (verified against lipidr 2.20.0's
 # internal normalize_istd(): `if (length(istd_list[[i]]) == 0) f <- 1`). Fail loud instead:
-istd_coverage <- table(rowData(data_normalized)$Class, rowData(data_normalized)$istd)
+istd_coverage <- table(rowData(d_raw)$Class, rowData(d_raw)$istd)
 uncovered <- rownames(istd_coverage)[
   !('TRUE' %in% colnames(istd_coverage)) | istd_coverage[, 'TRUE'] == 0
 ]
@@ -135,7 +142,7 @@ if (length(uncovered) > 0) {
   ))
 }
 
-d_istd <- normalize_istd(data_normalized, measure = 'Area', exclude = 'blank', log = TRUE)
+d_istd <- normalize_istd(d_raw, measure = 'Area', exclude = 'blank', log = TRUE)
 
 # Class-level summary is only valid WITHIN a class unless per-class response factors were calibrated:
 # cross-class molar ratios (e.g. 'PE is 3x PC') carry head-group response bias and are not licensed here.
