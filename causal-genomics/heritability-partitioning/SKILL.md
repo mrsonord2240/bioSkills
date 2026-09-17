@@ -442,9 +442,9 @@ wget https://alkesgroup.broadinstitute.org/LDSCORE/1000G_Phase3_weights_hm3_no_M
 wget https://alkesgroup.broadinstitute.org/LDSCORE/Multi_tissue_chromatin_1000Gv3_ldscores.tgz
 ```
 
-Before pointing LDSC at real GWAS data, confirm the install works: `bash examples/smoke_test_ldsc.sh`
-runs `--h2`, `--rg`, and `--h2-cts` against the tiny bundled fixtures in `examples/data/` (copied from
-`CBIIT/ldsc`'s own test suite) and prints real, checkable regression output for each.
+Before pointing LDSC at real GWAS data, confirm the install works: `LDSC_DIR=./ldsc bash examples/smoke_test_ldsc.sh`
+runs `--h2`, `--rg`, and `--h2-cts` against the simulated fixtures in the clone's own `test/` directory
+and prints real, checkable regression output for each.
 
 ```r
 # HDL
