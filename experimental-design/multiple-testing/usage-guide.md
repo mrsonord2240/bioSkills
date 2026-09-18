@@ -52,15 +52,6 @@ Tell your AI agent what you want to do:
 4. Apply IHW or assess an independent filter when a power gain is available and legitimate.
 5. Flag the statsmodels default-method trap and the false-coverage-rate issue for selected intervals.
 
-## Tips
-
-- FDR is the discovery default; FWER (Bonferroni/Holm) is for small confirmatory panels.
-- BH controls FDR under independence or positive dependence; use BY under arbitrary or negative dependence.
-- The q-value estimates the proportion of true nulls and is more powerful than BH when most hypotheses are alternatives.
-- IHW recovers power only when the covariate is independent of the p-value under the null.
-- In Python, statsmodels multipletests defaults to Holm-Sidak, not BH; always pass the method explicitly.
-- Filtering before testing helps only if the filter is independent of the test statistic under the null.
-
 ## Related Skills
 
 - power-analysis - The FDR target feeds the power calculation

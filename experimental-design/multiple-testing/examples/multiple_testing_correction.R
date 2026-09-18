@@ -41,11 +41,32 @@ if (requireNamespace('qvalue', quietly = TRUE)) {
 # 3. IHW: weight hypotheses by an independent covariate (must be null-independent)
 # ---------------------------------------------------------------------------
 if (requireNamespace('IHW', quietly = TRUE)) {
-  library(IHW)
+  # nbins pinned low: default "auto" (floor(m/1500)) has been observed to crash the R session
+  # outright (SIGSEGV) on IHW's lpsymphony LP backend for m >= ~8000; pinning nbins reduces but does
+  # NOT eliminate the crash risk (see SKILL.md's IHW failure mode). Because it is a process crash, not
+  # an R-level error, tryCatch cannot help -- run it in a child process instead, so a segfault only
+  # kills the child and this script can retry.
   mean_expr <- rgamma(n_genes, shape = 2, rate = 0.5)        # covariate independent of null p
-  res <- ihw(pvalues, mean_expr, alpha = 0.05)
-  cat(sprintf('IHW discoveries at FDR 0.05 = %d (vs BH = %d)\n',
-              rejections(res), sum(p.adjust(pvalues, 'BH') < 0.05)))
+  ihw_in  <- tempfile(fileext = '.rds')
+  ihw_out <- tempfile(fileext = '.rds')
+  saveRDS(list(pvalues = pvalues, mean_expr = mean_expr), ihw_in)
+  ihw_expr <- sprintf(
+    "d <- readRDS('%s'); library(IHW); r <- ihw(d$pvalues, d$mean_expr, alpha = 0.05, nbins = 5); saveRDS(rejections(r), '%s')",
+    gsub('\\\\', '/', ihw_in), gsub('\\\\', '/', ihw_out))
+  ihw_ok <- FALSE
+  for (attempt in 1:3) {
+    status <- system2(file.path(R.home('bin'), 'Rscript'), c('-e', shQuote(ihw_expr)),
+                       stdout = FALSE, stderr = FALSE)
+    if (identical(status, 0L) && file.exists(ihw_out)) { ihw_ok <- TRUE; break }
+  }
+  bh_discoveries <- sum(p.adjust(pvalues, 'BH') < 0.05)
+  if (ihw_ok) {
+    cat(sprintf('IHW discoveries at FDR 0.05 = %d (vs BH = %d)\n', readRDS(ihw_out), bh_discoveries))
+  } else {
+    cat(sprintf('IHW did not complete after 3 attempts (solver crash); falling back to BH = %d discoveries\n',
+                bh_discoveries))
+  }
+  unlink(c(ihw_in, ihw_out))
 }
 
 # ---------------------------------------------------------------------------
