@@ -8,23 +8,7 @@ The agent will pick the appropriate method based on the experimental scenario: n
 
 ## Prerequisites
 
-```r
-install.packages(c('coloc', 'susieR', 'ggplot2', 'patchwork', 'data.table'))
-install.packages('remotes')
-remotes::install_github('jrs95/hyprcoloc')          # GitHub-only, never CRAN
-
-# Optional, for multi-omic
-remotes::install_github('clagiamba/moloc')           # 3-5 traits
-
-# CLI tools (outside R)
-# SMR: download binary from https://yanglab.westlake.edu.cn/software/smr/
-# eCAVIAR: compile from https://github.com/fhormoz/caviar
-# PWCoCo: compile from https://github.com/jwr-git/pwcoco
-# SharePro_coloc: git clone https://github.com/zhwm/SharePro_coloc then pip install -r requirements.txt
-
-# LD reference panel (e.g. 1000 Genomes phase 3) via plink2
-# plink2 --pfile 1KG_EUR_chr6 --chr 6 --from-bp 30000000 --to-bp 31000000 --r-phased square --out ld
-```
+See SKILL.md "Tool Install Notes" for the exact install command per tool (coloc, susieR, HyPrColoc, SMR, eCAVIAR, PWCoCo, SharePro_coloc, moloc, plus the ggplot2/patchwork/data.table plotting deps). LD reference panel extraction via plink2 is in SKILL.md "LD Matrix Construction for coloc.susie".
 
 ## Quick Start
 
@@ -107,72 +91,7 @@ For a methods or supplementary description in plain prose:
 
 A high PP.H4 (>= 0.75) supports a shared-causal-variant interpretation. A high PP.H3 supports distinct causal variants in linkage. PP.H0 / PP.H1 / PP.H2 indicate the locus is underpowered for at least one trait. Always report all five posteriors, not PP.H4 alone.
 
-## GWAS Summary-Stats Harmonisation (Worked Example)
-
-```r
-harmonise <- function(df1, df2) {
-    m <- merge(df1, df2, by='SNP', suffixes=c('.1','.2'))
-    same <- m$A1.1 == m$A1.2 & m$A2.1 == m$A2.2
-    flip <- m$A1.1 == m$A2.2 & m$A2.1 == m$A1.2
-    palindromic <- (m$A1.1 %in% c('A','T') & m$A2.1 %in% c('A','T')) |
-                   (m$A1.1 %in% c('C','G') & m$A2.1 %in% c('C','G'))
-    m$BETA.2[flip] <- -m$BETA.2[flip]
-    m$MAF.2[flip] <- 1 - m$MAF.2[flip]
-    keep <- (same | flip) & !(palindromic & m$MAF.1 > 0.42)
-    m[keep, ]
-}
-```
-
-Harmonisation pitfalls to watch for:
-
-- **Allele coding mismatch.** GWAS may report effect allele as A1 while eQTL reports it as A2. Always check both and flip betas where needed.
-- **Build mismatch.** hg19 GWAS coords + hg38 eQTL coords silently merge on rsID but break on chr:pos. Lift over with `rtracklayer::liftOver` or CrossMap before merging.
-- **Palindromic SNPs at high MAF.** A/T and C/G SNPs at MAF > 0.42 cannot be unambiguously strand-resolved; drop them or resolve with reference-panel MAF.
-- **Multi-allelic SNPs.** Many summary stats collapse multi-allelic loci by keeping only the most-frequent alt; if datasets pick different alts, harmonisation drops the SNP. Split on chr:pos:ref:alt as a unique key.
-- **rsID dependence.** rsID can be remapped across dbSNP builds (e.g. merge of two rsIDs into one). Prefer chr:pos:ref:alt keys for cross-study merges.
-
-## Worked PWCoCo Conditional Recipe
-
-```bash
-# Step 1: GCTA-COJO identifies independent signals at the locus
-gcta64 --bfile 1KG_EUR --chr 6 --extract locus.snplist \
-       --cojo-file gwas.ma --cojo-slct --out gwas_cojo
-
-# gwas_cojo.jma.cojo lists independent signals (per --cojo-p 5e-8 default)
-
-# Step 2: PWCoCo runs pairwise conditional coloc.abf per signal pair
-pwcoco --bfile 1KG_EUR --sum_stats1 gwas.txt --sum_stats2 eqtl.txt \
-       --p_cutoff1 5e-8 --p_cutoff2 5e-5 \
-       --chr 6 \
-       --out pwcoco_result
-```
-
-Output: one coloc.abf result per (conditional signal in trait 1, conditional signal in trait 2) pair. Interpret each row as a separate single-signal coloc test. If COJO finds 2 GWAS + 1 eQTL signals, expect 2 result rows. PWCoCo requires individual-level reference (plink bfile); cannot run on summary stats alone.
-
-## Lead-SNP-Swap Operational Steps
-
-To diagnose window-centring bias, re-run coloc.abf three times with different window centres:
-
-1. **GWAS-centred window:** +/- 500 kb around the GWAS lead SNP.
-2. **eQTL-centred window:** +/- 500 kb around the eQTL top SNP for the gene.
-3. **Joint top-variant window:** +/- 500 kb around the SNP with the lowest min-p across both traits.
-
-Report all three PP.H4 values. If they agree within 0.1, the result is stable. If they swing > 0.2, the locus is borderline and the report must list all three centrings. For multi-causal loci (allelic heterogeneity), the joint top-variant window typically gives the most-defensible result for coloc.abf; coloc.susie removes the centring sensitivity by construction.
-
-## Tips
-
-- **Default to coloc.abf + sensitivity** for first-pass screening; escalate to coloc.susie only when multi-causal is biologically plausible (conditional analysis identified independent signals).
-- **PP.H3 + PP.H4 framing**: report both. PP.H4 = 0.6 with PP.H3 = 0.05 is qualitatively different from PP.H4 = 0.6 with PP.H3 = 0.3.
-- **p12 sensitivity is non-negotiable**: every reported PP.H4 should be accompanied by the p12 range over which it stays above threshold. Reviewer-grade reporting expects this.
-- **Trans-eQTL needs lower p12** (5e-6 or 1e-6) to avoid over-claiming biologically improbable shared causality.
-- **Match LD ancestry to GWAS ancestry**. EUR LD on AFR z-scores produces spurious credible sets in coloc.susie.
-- **MHC is special**: never report a standard coloc PP.H4 for MHC without the long-range-LD caveat. Use HLA-coloc on classical alleles instead.
-- **N < 200 eQTL is underpowered for coloc**: report H0/H1/H2 dominance honestly; do not claim absence of colocalization.
-- **sdY semantics**: provide `sdY=1` ONLY if the trait is standardised (e.g. inverse-normal-transformed eQTL expression). If unsure, omit and let coloc estimate from MAF + varbeta.
-- **Palindromic SNPs**: drop A/T and C/G SNPs with MAF > 0.42; their strand cannot be inferred from coding alone.
-- **Lead-SNP-swap diagnostic**: re-run with the window centred on the OTHER trait's lead. If PP.H4 swings > 0.2, the locus is borderline; report multiple centrings.
-- **SMR vs coloc give different answers** to different questions. Run both for therapeutic-target prioritization; report agreement metrics.
-- **Open Targets / FinnGen PP.H4 default is >= 0.75**, not 0.8. Use >= 0.7 as triangulation tier when PP.H4 is one of several lines of evidence (TWAS, cis-MR, effector-gene), >= 0.75 for screening, >= 0.80 for published stand-alone coloc claims, >= 0.90 for stringent clinical follow-up, >= 0.95 for industry / regulatory drug-target submission.
+Worked harmonisation code + pitfalls, the PWCoCo conditional CLI recipe, and the lead-SNP-swap operational steps now live in SKILL.md (Allele Harmonisation, PWCoCo, and Lead-SNP swap and window bias sections respectively) -- see there rather than duplicating here.
 
 ## Related Skills
 

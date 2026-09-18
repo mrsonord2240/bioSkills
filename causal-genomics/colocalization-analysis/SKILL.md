@@ -1,6 +1,6 @@
 ---
 name: bio-causal-genomics-colocalization-analysis
-description: Test whether two or more traits share a causal variant at a locus using Bayesian colocalization (coloc.abf, coloc.susie, HyPrColoc, moloc, eCAVIAR, SMR/HEIDI, PWCoCo, SharePro). Use when integrating GWAS with eQTL/sQTL/pQTL/mQTL, distinguishing shared causal variants from LD-driven coincidence, handling allelic heterogeneity, choosing between single-causal vs multi-causal methods, picking PP.H4 thresholds, running sensitivity over p12, or harmonising summary statistics for colocalization.
+description: Test whether a GWAS signal and a molecular QTL (eQTL/sQTL/pQTL/mQTL) share the same causal variant -- e.g. "does my GWAS lead SNP colocalize with this eQTL, or is it just LD" -- using Bayesian colocalization (coloc.abf, coloc.susie, HyPrColoc, moloc, eCAVIAR, SMR/HEIDI, PWCoCo, SharePro). Use when integrating GWAS with eQTL/sQTL/pQTL/mQTL, distinguishing shared causal variants from LD-driven coincidence, handling allelic heterogeneity, choosing between single-causal vs multi-causal methods, picking PP.H4 thresholds, running sensitivity over p12, or harmonising summary statistics for colocalization.
 tool_type: r
 primary_tool: coloc
 license: MIT
@@ -63,11 +63,11 @@ Methodology evolves; verify the current Open Targets Genetics, eQTL Catalogue, a
 
 ### coloc.abf -- PP.H3 inflation under multiple causal variants
 
-**Trigger:** Locus has 2+ independent causal signals in moderate LD (r2 ~ 0.3-0.6).
+**Trigger:** Locus has 2+ independent causal signals in moderate LD (r2 ~ 0.3-0.6) **AND** comparable effect sizes / limited power at the two signals. r2 in that range is necessary but not sufficient: verified by direct simulation, a well-powered, clean two-causal-variant locus at r2=0.51-0.53 resolved decisively to PP.H4=1.0 (when the two causal SNPs happened to include the true shared one) or PP.H3=1.0 (when they were genuinely distinct) with no ambiguity -- coloc.abf did not exhibit spurious PP.H3 inflation from r2 alone. The ambiguous symptom below needs the additional condition of comparable/underpowered per-SNP evidence at the two signals, not just moderate LD.
 
-**Mechanism:** The single-causal-variant assumption forces the model to allocate posterior mass to H3 (distinct causal variants) whenever the per-SNP Bayes factors for the two top SNPs do not align.
+**Mechanism:** The single-causal-variant assumption forces the model to allocate posterior mass to H3 (distinct causal variants) whenever the per-SNP Bayes factors for the two top SNPs do not align **and neither SNP's evidence clearly dominates the other**.
 
-**Symptom:** Visual co-localization in LocusZoom looks convincing, but `result$summary['PP.H3.abf']` dominates over PP.H4; sensitivity() shows PP.H4 stays low across the entire p12 grid.
+**Symptom:** Visual co-localization in LocusZoom looks convincing, but `result$summary['PP.H3.abf']` dominates over PP.H4; sensitivity() shows PP.H4 stays low across the entire p12 grid. If PP.H3/PP.H4 instead resolve decisively (near 0 or 1) at moderate LD, the locus is well-powered and the call can be trusted without escalating to coloc.susie.
 
 **Fix:** Run coloc.susie (or eCAVIAR or PWCoCo) to allow multiple causal variants. If coloc.susie returns multiple credible sets with one pair showing PP.H4 > 0.75, this is real allelic heterogeneity not failure.
 
@@ -101,6 +101,8 @@ Methodology evolves; verify the current Open Targets Genetics, eQTL Catalogue, a
 
 **Fix (MHC):** Use HLA-imputed classical alleles via SNP2HLA / HIBAG / HLA-TAPAS, then HLA-coloc (Butler-Laporte 2024 medRxiv) -- NOT coloc on SNPs in MHC. OR exclude MHC from genome-wide coloc and report HLA association at the haplotype/allele level. **Fix (chr 8 inversion):** Exclude chr8:8.1-11.9 Mb or pre-condition on inversion genotype before coloc. Never report a single coloc PP.H4 in either region without this caveat.
 
+**Enforce programmatically, do not rely on remembering the coordinates:** call `flag_excluded_region()` (defined in the Standard coloc.abf Pipeline below) on the locus before running coloc.abf/coloc.susie, and abort/redirect rather than compute a naive PP.H4 when it returns non-NA.
+
 ### Lead-SNP swap and window bias
 
 **Trigger:** The two traits have different lead SNPs at the same locus; analyst centres each window on the trait-specific lead.
@@ -110,6 +112,14 @@ Methodology evolves; verify the current Open Targets Genetics, eQTL Catalogue, a
 **Symptom:** Re-centring the window on the GWAS lead vs the eQTL lead produces qualitatively different PP.H4.
 
 **Fix:** Use a SINGLE window (typically +/- 500 kb or 1 Mb) centred on the joint top-variant (the SNP with the lowest min-p across both traits), or on the GWAS lead consistently. Report PP under multiple centring choices; flag the locus if PP swings > 0.2 across centrings.
+
+**Operational steps to diagnose window-centring bias** -- re-run coloc.abf three times with different window centres:
+
+1. **GWAS-centred window:** +/- 500 kb around the GWAS lead SNP.
+2. **eQTL-centred window:** +/- 500 kb around the eQTL top SNP for the gene.
+3. **Joint top-variant window:** +/- 500 kb around the SNP with the lowest min-p across both traits.
+
+Report all three PP.H4 values. If they agree within 0.1, the result is stable. If they swing > 0.2, the locus is borderline and the report must list all three centrings. For multi-causal loci (allelic heterogeneity), the joint top-variant window typically gives the most-defensible result for coloc.abf; coloc.susie removes the centring sensitivity by construction.
 
 ### Underpowered eQTL (N < 200)
 
@@ -267,7 +277,23 @@ PWCoCo (Robinson 2022) wraps GCTA-COJO conditional analysis around coloc.abf. Fo
 
 **Inputs:** Per-trait summary stats (SNP, A1, A2, freq, beta, se, p, N) + plink bfile reference. **Output:** One coloc.abf result per (conditional signal 1, conditional signal 2) pair. Interpret each row as an independent single-signal coloc.
 
-**Caveats:** PWCoCo requires individual-level reference (plink bfile); cannot run on summary stats alone. Collinearity threshold in COJO (default `--cojo-collinear 0.9`) controls how aggressively independent signals are split; lower values fragment, higher values merge. Worked CLI recipe in usage-guide.md.
+**Caveats:** PWCoCo requires individual-level reference (plink bfile); cannot run on summary stats alone. Collinearity threshold in COJO (default `--cojo-collinear 0.9`) controls how aggressively independent signals are split; lower values fragment, higher values merge.
+
+```bash
+# Step 1: GCTA-COJO identifies independent signals at the locus
+gcta64 --bfile 1KG_EUR --chr 6 --extract locus.snplist \
+       --cojo-file gwas.ma --cojo-slct --out gwas_cojo
+
+# gwas_cojo.jma.cojo lists independent signals (per --cojo-p 5e-8 default)
+
+# Step 2: PWCoCo runs pairwise conditional coloc.abf per signal pair
+pwcoco --bfile 1KG_EUR --sum_stats1 gwas.txt --sum_stats2 eqtl.txt \
+       --p_cutoff1 5e-8 --p_cutoff2 5e-5 \
+       --chr 6 \
+       --out pwcoco_result
+```
+
+Output: one coloc.abf result per (conditional signal in trait 1, conditional signal in trait 2) pair. Interpret each row as a separate single-signal coloc test. If COJO finds 2 GWAS + 1 eQTL signals, expect 2 result rows.
 
 ## Standard coloc.abf Pipeline
 
@@ -277,6 +303,26 @@ PWCoCo (Robinson 2022) wraps GCTA-COJO conditional analysis around coloc.abf. Fo
 
 ```r
 library(coloc)
+
+# Programmatic MHC / chr 8 inversion gate -- run BEFORE coloc.abf or coloc.susie.
+# Prose alone is not a safeguard: this is the same kind of hard stop() as the
+# estimate_s_rss lambda > 0.05 check below, applied to the "single-causal
+# assumption breaks" regions documented in the MHC / HLA + chr 8 inversion
+# failure mode.
+flag_excluded_region <- function(chr, pos_bp, build = 'hg38') {
+  if (build != 'hg38') stop('flag_excluded_region: liftover to hg38 first -- this Skill only documents hg38 MHC / chr8 inversion boundaries')
+  chr <- gsub('^chr', '', as.character(chr))
+  if (chr == '6' && pos_bp >= 25000000 && pos_bp <= 35000000) return('MHC')
+  if (chr == '8' && pos_bp >= 8100000  && pos_bp <= 11900000) return('chr8_inversion')
+  NA_character_
+}
+
+region_flag <- flag_excluded_region(chr = gwas_df$CHR[1], pos_bp = gwas_df$POS[which.min(gwas_df$P)])
+if (!is.na(region_flag)) {
+  stop(sprintf(
+    'Locus is in the %s exclusion zone -- standard coloc PP.H4 is not interpretable here. Use HLA-coloc (Butler-Laporte 2024) for MHC, or pre-condition on inversion genotype for chr8; do not report a naive coloc.abf/coloc.susie result.',
+    region_flag))
+}
 
 # Inputs: harmonised gwas_df and eqtl_df with SNP, BETA, SE, MAF, N, POS columns
 # Both must share the same SNP set and allele coding (verify with harmonise step)
@@ -322,6 +368,10 @@ sens <- coloc::sensitivity(res, rule='H4 > 0.75')   # generates plot + table
 
 ```r
 library(coloc); library(susieR)
+
+# Same MHC / chr 8 inversion gate as the coloc.abf pipeline -- flag_excluded_region()
+# is defined in the Standard coloc.abf Pipeline above; call it here too before
+# running runsusie()/coloc.susie() on this locus.
 
 # Diagnostic: z-score vs LD consistency MUST be checked
 z_gwas <- gwas_df$BETA / gwas_df$SE
@@ -369,7 +419,27 @@ Mismatched effect alleles silently invert signs of betas, collapsing PP.H4 into 
 4. Drop palindromic SNPs (A/T or C/G) at MAF > 0.42; their strand cannot be inferred from coding alone (TwoSampleMR `harmonise_data` standard cutoff).
 5. Verify genome build alignment (hg19 vs hg38 must match; lift over if not).
 
-Worked harmonisation code and build-mismatch pitfalls: see usage-guide.md.
+```r
+harmonise <- function(df1, df2) {
+    m <- merge(df1, df2, by='SNP', suffixes=c('.1','.2'))
+    same <- m$A1.1 == m$A1.2 & m$A2.1 == m$A2.2
+    flip <- m$A1.1 == m$A2.2 & m$A2.1 == m$A1.2
+    palindromic <- (m$A1.1 %in% c('A','T') & m$A2.1 %in% c('A','T')) |
+                   (m$A1.1 %in% c('C','G') & m$A2.1 %in% c('C','G'))
+    m$BETA.2[flip] <- -m$BETA.2[flip]
+    m$MAF.2[flip] <- 1 - m$MAF.2[flip]
+    keep <- (same | flip) & !(palindromic & m$MAF.1 > 0.42)
+    m[keep, ]
+}
+```
+
+Harmonisation pitfalls to watch for:
+
+- **Allele coding mismatch.** GWAS may report effect allele as A1 while eQTL reports it as A2. Always check both and flip betas where needed.
+- **Build mismatch.** hg19 GWAS coords + hg38 eQTL coords silently merge on rsID but break on chr:pos. Lift over with `rtracklayer::liftOver` or CrossMap before merging.
+- **Palindromic SNPs at high MAF.** A/T and C/G SNPs at MAF > 0.42 cannot be unambiguously strand-resolved; drop them or resolve with reference-panel MAF.
+- **Multi-allelic SNPs.** Many summary stats collapse multi-allelic loci by keeping only the most-frequent alt; if datasets pick different alts, harmonisation drops the SNP. Split on chr:pos:ref:alt as a unique key.
+- **rsID dependence.** rsID can be remapped across dbSNP builds (e.g. merge of two rsIDs into one). Prefer chr:pos:ref:alt keys for cross-study merges.
 
 ## Anticipated Reviewer Pushback
 
@@ -408,6 +478,7 @@ Worked harmonisation code and build-mismatch pitfalls: see usage-guide.md.
 - **PWCoCo**: GitHub jwr-git/pwcoco. Compiled C++ CLI; can also be invoked from R via wrapper scripts.
 - **SharePro_coloc**: GitHub only (no PyPI release). `git clone https://github.com/zhwm/SharePro_coloc` then `pip install -r requirements.txt`.
 - **moloc**: GitHub clagiamba/moloc. R package; minimally updated since 2019, no CRAN release. R >= 3.5.
+- **Plotting / data deps**: `install.packages(c('ggplot2', 'patchwork', 'data.table'))` -- ggplot2 + patchwork are used by `examples/regional_plots.R`.
 
 ## Reviewer-Grade Reporting Template
 
