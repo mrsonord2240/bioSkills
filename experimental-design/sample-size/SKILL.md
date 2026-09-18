@@ -1,6 +1,6 @@
 ---
 name: bio-experimental-design-sample-size
-description: Estimates the minimum biological replicates (or cells/events) for a target power at a target FDR in genomics experiments using ssizeRNA, PROPER, powsimR for scRNA-seq, and pilot-data dispersion estimation from DESeq2/edgeR. Covers the biological-versus-technical replication distinction (technical replicates do not add degrees of freedom for biological inference), replicate-number-versus-sequencing-depth budgeting, scRNA-seq sample-versus-cell allocation under a pseudobulk model, and the critique that "n=3" is a publication convention rather than a power calculation. Use when budgeting a sequencing experiment, writing the sample-size justification in a grant, estimating replicates from pilot data, allocating a fixed budget between samples and depth, or planning scRNA-seq cohort size. For clinical-trial sample size see clinical-biostatistics/power-and-sample-size; for the power-given-n direction see experimental-design/power-analysis.
+description: Estimates the minimum biological replicates (or cells/donors) for a target power at a target FDR in genomics experiments using ssizeRNA, PROPER, and pilot-data dispersion estimation from DESeq2/edgeR, including a pseudobulk-on-donors route for scRNA-seq cohort sizing. Covers the biological-versus-technical replication distinction (technical replicates do not add degrees of freedom for biological inference), replicate-number-versus-sequencing-depth budgeting, scRNA-seq sample-versus-cell allocation under a pseudobulk model, and the critique that "n=3" is a publication convention rather than a power calculation. Use when budgeting a sequencing experiment, writing the sample-size justification in a grant, estimating replicates from pilot data, allocating a fixed budget between samples and depth, or planning scRNA-seq cohort size. For clinical-trial sample size see clinical-biostatistics/power-and-sample-size; for the power-given-n direction see experimental-design/power-analysis.
 tool_type: r
 primary_tool: ssizeRNA
 license: MIT
@@ -8,17 +8,31 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: ssizeRNA 1.3+, PROPER 1.34+, powsimR 1.2+ (GitHub), DESeq2 1.42+, edgeR 4.0+.
+Checked on: ssizeRNA 1.3.3, PROPER 1.38.0, DESeq2 1.46.0, edgeR 4.4.2, pwr 1.3.0 (R 4.4.3 / Bioconductor 3.20).
 
 Before using code patterns, verify installed versions match. If versions differ:
 - R: `packageVersion('<pkg>')` then `?function_name` to verify parameters
 
-If code throws an error, introspect the installed package and adapt to the actual API. Notes: ssizeRNA provides `ssizeRNA_single()` (one mean/dispersion for all genes), `ssizeRNA_vary()` (genes vary), and `check.power()` (average power and true FDR for a given n); powsimR is GitHub-only with drifting signatures. Verify against the installed help before use.
+If code throws an error, introspect the installed package and adapt to the actual API. Notes:
+- `ssizeRNA_single()` takes **one mean/dispersion scalar for all genes**; `ssizeRNA_vary()` takes **per-gene vectors**. Passing scalars to `ssizeRNA_vary()` raises `Error in integrate(...) : non-finite function value` on 1.3.3 — use `_single` for a single mean/dispersion and reserve `_vary` for real pilot vectors.
+- `res$ssize` from both functions is a **1x3 matrix** `(pi0, ssize, power)`, not a scalar — index it: `res$ssize[, "ssize"]`.
+- Both estimators return `ssize = NA` silently, with no error, when no n within `maxN` reaches the target — see "When No n Is Reachable" below. Always check `is.na()` before reporting a number.
+- `powsimR` is GitHub-only, drifts across versions, and its dependency closure (`bayNorm`) can fail to build against a newer Bioconductor than it was pinned to. If it is not installed or fails to build, use the pseudobulk-on-donors pattern below (`ssizeRNA_vary`/PROPER on donor-level pseudobulk counts) — it needs no extra dependency and is not a lesser substitute, since population DE power is set by donors either way (Squair 2021).
+- `PROPER::estParam()` errors with `the condition has length > 1` on R >= 4.0 because a plain `matrix` now has class `c("matrix","array")` and the package's `class(X) %in% c(...)` check was written for R < 4.0. Work around it with `oldClass(X) <- "matrix"` before calling `estParam` (verified on PROPER 1.38.0 / R 4.4.3).
+
+**Setup:**
+```r
+install.packages('BiocManager')
+BiocManager::install(c('ssizeRNA', 'PROPER', 'DESeq2', 'edgeR'))
+install.packages('pwr')
+```
+
+**Worked script:** `examples/sample_size_estimation.R` runs sections 1-4 below end to end on the ssizeRNA/DESeq2/pwr defaults and prints real numbers (not `NA`/`NaN`) — run it first to see the shape of the output before adapting parameters.
 
 # Sample Size for Genomics Experiments
 
 **"How many samples do I need?"** -> Find the smallest number of biological replicates per group that achieves a target marginal power at a target FDR, given the dispersion and effect-size distribution expected for the assay — counting biological units, not measurements.
-- R: `ssizeRNA::ssizeRNA_vary()`, `ssizeRNA::check.power()` — FDR-aware NB sample size; pilot dispersions from `DESeq2`/`edgeR`
+- R: `ssizeRNA::ssizeRNA_single()` / `ssizeRNA::ssizeRNA_vary()`, `ssizeRNA::check.power()` — FDR-aware NB sample size; pilot dispersions from `DESeq2`/`edgeR`
 
 ## The Single Most Important Modern Insight -- The Biological Replicate Is the Unit, and n=3 Is a Convention
 
@@ -28,23 +42,23 @@ Sample size is a count of **biological replicates** — independent experimental
 
 | Approach | Model | Tool | Strength | Fails / costs when |
 |----------|-------|------|----------|--------------------|
-| FDR-aware NB sample size | NB, varying mean/dispersion | `ssizeRNA::ssizeRNA_vary` | controls average power at a true FDR | needs a dispersion/expression model |
-| Pilot-dispersion simulation | empirical dispersions from pilot | `PROPER`, `powsimR` | most defensible; study-specific | requires a pilot dataset |
-| Single-parameter NB | one mean/dispersion for all genes | `ssizeRNA::ssizeRNA_single` | quick; transparent | ignores the mean-dispersion trend |
-| Verify a planned n | average power + true FDR at fixed n | `ssizeRNA::check.power` | sanity-checks a budget-driven n | not a search over n |
-| scRNA-seq cohort sizing | pseudobulk over donors | `powsimR` | counts the right unit (donors) | cell-level sizing is wrong unit |
-| Per-feature t-test n | Gaussian (Cohen's d) | `pwr::pwr.t.test` | proteomics/continuous after transform | wrong for raw counts |
+| Single-parameter NB | one mean/dispersion for all genes | `ssizeRNA::ssizeRNA_single` | quick; transparent; no pilot needed | ignores the mean-dispersion trend |
+| FDR-aware NB sample size | NB, per-gene mean/dispersion vectors | `ssizeRNA::ssizeRNA_vary` | controls average power at a true FDR with real gene-to-gene heterogeneity | needs per-gene vectors, not scalars — errors on `integrate()` otherwise |
+| Pilot-dispersion simulation | empirical dispersions from pilot | `PROPER` | most defensible; study-specific | requires a pilot dataset |
+| Verify a planned n | average power + true FDR at fixed n | `ssizeRNA::check.power` | sanity-checks a budget-driven n | not a search over n; NaN FDR at 0 discoveries needs interpreting |
+| scRNA-seq cohort sizing | pseudobulk over donors | `ssizeRNA_vary`/`PROPER` on donor-level pseudobulk counts | counts the right unit (donors); needs no extra dependency beyond DESeq2/edgeR | cell-level sizing is wrong unit |
+| Per-feature t-test n | Gaussian (Cohen's d), panel-wide alpha | `pwr::pwr.t.test` with adjusted `sig.level` | proteomics/continuous after transform | wrong for raw counts; wrong at per-feature alpha=0.05 on a multi-feature panel |
 
 ## Decision Tree by Scenario
 
 | Scenario | Recommended approach | Why |
 |----------|---------------------|-----|
-| Bulk RNA-seq, pilot available | estimate dispersions, then `ssizeRNA_vary`/PROPER | study-specific dispersion beats a guess |
-| Bulk RNA-seq, no pilot | `ssizeRNA_vary` with a literature dispersion, stated as approximate | transparent starting point |
+| Bulk RNA-seq, pilot available | estimate dispersions (DESeq2/edgeR), then `ssizeRNA_vary`/PROPER | study-specific dispersion beats a guess |
+| Bulk RNA-seq, no pilot | `ssizeRNA_single` with a literature dispersion, stated as approximate | transparent starting point; `_vary` needs vectors it doesn't have yet |
 | Budget already fixed at some n | `check.power` to report achieved power and true FDR | answers "is this n adequate?" |
-| scRNA-seq disease vs control | size the number of DONORS (pseudobulk; powsimR) | population power scales with donors |
+| scRNA-seq disease vs control | size the number of DONORS on pseudobulk counts (`ssizeRNA_vary`/PROPER) | population power scales with donors, not cells |
 | ChIP/ATAC/methylation | NB sample size per region; assay floor as minimum | overdispersed counts; detection floor |
-| Proteomics (continuous) | `pwr::pwr.t.test` per protein, with missingness caveat | Gaussian after transform |
+| Proteomics (continuous) | `pwr::pwr.t.test` per protein with panel-wide alpha correction, plus missingness caveat | Gaussian after transform; per-protein alpha=0.05 under-corrects for the panel |
 | Have technical replicates | collapse to biological units first | technical reps add no biological df |
 | Clinical-trial endpoint | -> clinical-biostatistics/power-and-sample-size | regulated regime |
 
@@ -52,34 +66,133 @@ Sample size is a count of **biological replicates** — independent experimental
 
 **Goal:** Find the minimum biological replicates per group for a target power at a target FDR, accounting for the proportion of DE genes and the mean-dispersion structure.
 
-**Approach:** Specify the number of genes, the proportion non-DE (pi0), the mean count and dispersion (ideally from pilot data), the fold change, the target FDR, and the target power; let `ssizeRNA_vary` search replicate numbers and return the smallest that reaches the target.
+**No pilot yet -- single mean/dispersion for all genes:** use `ssizeRNA_single`. Use a realistic normalized mean count (order 100-500 for typical bulk RNA-seq depth) — a small toy `mu` can push the answer past a low `maxN` and come back `NA` (see "When No n Is Reachable" below).
 
 ```r
 library(ssizeRNA)
-res <- ssizeRNA_vary(nGenes = 20000, pi0 = 0.95,        # 5% DE
-                     mu = 10, disp = 0.2,                # mean count + dispersion (from pilot ideally)
-                     fc = 1.5, fdr = 0.05, power = 0.80,
-                     maxN = 30)
-res$ssize                                                # minimum n per group
+set.seed(20260918)
+res <- ssizeRNA_single(nGenes = 20000, pi0 = 0.95, m = 200,  # m: pseudo sample size for the internal simulation, NOT n per group
+                       mu = 200, disp = 0.2,                  # mean count + dispersion (from pilot ideally)
+                       fc = 1.5, fdr = 0.05, power = 0.80,
+                       maxN = 200)
+res$ssize[, "ssize"]                                          # minimum n per group -- res$ssize is a 1x3 matrix (pi0, ssize, power)
 
 # Verify a budget-fixed n: average power and TRUE realized FDR
-check.power(nGenes = 20000, pi0 = 0.95, m = 6, mu = 10, disp = 0.2, fc = 1.5, fdr = 0.05, sims = 50)
+check.power(nGenes = 20000, pi0 = 0.95, m = 6, mu = 200, disp = 0.2, fc = 1.5, fdr = 0.05, sims = 50)
+# A NaN true FDR here means ZERO discoveries at this n, not "FDR unknown" -- see "When No n Is Reachable".
+```
+
+**With pilot vectors -- heterogeneous mean/dispersion per gene:** use `ssizeRNA_vary`, fed by the `mu_vec`/`disp_vec` estimated from a pilot below. **Never pass it scalars** — `ssizeRNA_vary(mu = 200, disp = 0.2, ...)` raises `Error in integrate(...) : non-finite function value` on ssizeRNA 1.3.3 regardless of the values chosen; it needs a per-gene vector to integrate over.
+
+```r
+library(ssizeRNA)
+set.seed(20260918)
+res <- ssizeRNA_vary(nGenes = length(mu_vec), pi0 = 0.95,
+                     mu = mu_vec, disp = disp_vec,            # VECTORS from the pilot fit below
+                     fc = 1.5, fdr = 0.05, power = 0.80, maxN = 200)
+res$ssize[, "ssize"]
 ```
 
 ## Pilot Dispersions Drive Honest Sample Size
 
-**Goal:** Replace a guessed CV with a measured dispersion-mean trend from pilot data.
+**Goal:** Replace a guessed CV with a measured dispersion-mean trend from pilot data, as the `mu_vec`/`disp_vec` inputs to `ssizeRNA_vary` above or to PROPER below.
 
-**Approach:** Fit dispersions on the pilot with DESeq2 or edgeR, summarize them, and feed them into the simulation-based estimator (PROPER or powsimR) rather than a single-CV closed form.
+**Approach:** Fit dispersions on the pilot with DESeq2 or edgeR and take per-gene vectors, not a single summary number, into the simulation-based estimator.
 
 ```r
 library(DESeq2)
+set.seed(20260918)
 dds <- DESeqDataSetFromMatrix(pilot_counts, pilot_coldata, ~ condition)
 dds <- DESeq(dds)
-disp <- dispersions(dds)                                 # per-gene dispersion estimates
-summary(disp[is.finite(disp)])                           # feed median/trend to PROPER/powsimR
+disp_vec <- dispersions(dds)                             # per-gene dispersion estimates
+mu_vec   <- rowMeans(counts(dds, normalized = TRUE))     # per-gene normalized mean -- pairs with disp_vec
+keep     <- is.finite(disp_vec) & is.finite(mu_vec) & mu_vec > 0
+disp_vec <- disp_vec[keep]; mu_vec <- mu_vec[keep]
+summary(disp_vec)                                        # use the MEDIAN as a single-number cross-check --
+                                                          # the MEAN is pulled up ~2x by a handful of high-dispersion genes
 # A literature CV can be off by ~2x; a pilot dispersion is the defensible input.
+# Verified on synthetic 2-vs-2 pilot data (planted dispersion 0.35): median DESeq2 estimate 0.30-0.37 (ratio 0.86-1.07x).
 ```
+
+## Pilot-Data Simulation -- PROPER
+
+**Goal:** Simulate power directly from the pilot's own dispersion/mean distribution rather than a single summary vector fed to `ssizeRNA_vary` — PROPER resamples the actual estimated distribution, not just its per-gene point estimates.
+
+**Approach:** `estParam` characterizes the pilot count matrix; `RNAseq.SimOptions.2grp` builds a simulation config from those estimates plus a target fold change; `runSims` simulates each candidate replicate number; `comparePower` reports power/FDR by replicate number.
+
+```r
+library(PROPER)
+set.seed(20260918)
+counts_mat <- as.matrix(pilot_counts)
+oldClass(counts_mat) <- "matrix"        # work around PROPER::estParam's `class(X) %in% c(...)` check,
+                                         # which errors on R >= 4.0's matrix/array dual class (verified PROPER 1.38.0)
+params <- estParam(counts_mat, type = 1)
+sim.opts <- RNAseq.SimOptions.2grp(ngenes = nrow(counts_mat), seqDepth = params$seqDepth,
+                                    lBaselineExpr = params$lmean, lOD = params$lOD,
+                                    p.DE = 0.05, lfc = log2(1.5), sim.seed = 20260918)
+simres <- runSims(Nreps = c(3, 6, 10, 20), nsims = 20, sim.opts = sim.opts, DEmethod = "DESeq2")
+powres <- comparePower(simres, alpha.type = "fdr", alpha.nominal = 0.05,
+                       stratify.by = "expr", target.by = "lfc", delta = log2(1.5))
+powres$powerAveraged                    # average power per Nreps, at the target fold change
+```
+
+## scRNA-seq Cohort Sizing -- Pseudobulk on Donors
+
+**Goal:** Size the number of DONORS for population-level differential expression, since cells are pseudoreplicates and cell-level testing inflates false discoveries (see "scRNA-seq sized on cells" below).
+
+**Approach:** Aggregate (sum) each donor's cell-level counts per gene into one pseudobulk sample per donor, then size donors exactly like a bulk RNA-seq study — `ssizeRNA_vary`/PROPER on the pseudobulk dispersions. This needs only DESeq2/edgeR + ssizeRNA/PROPER, already installed for the bulk route, and is the fallback when `powsimR` is not installed (see Version Compatibility).
+
+```r
+library(DESeq2); library(ssizeRNA)
+set.seed(20260918)
+# cell_counts: named list, one genes x cells matrix per donor (from the scRNA-seq count matrix, split by donor)
+pseudobulk <- sapply(cell_counts, rowSums)               # genes x donors -- sum, not mean, across cells
+coldata <- data.frame(condition = donor_condition)       # one condition label per donor, aligned to pseudobulk's columns
+dds <- DESeqDataSetFromMatrix(pseudobulk, coldata, ~ condition)
+dds <- DESeq(dds)
+disp_vec <- dispersions(dds); mu_vec <- rowMeans(counts(dds, normalized = TRUE))
+keep <- is.finite(disp_vec) & is.finite(mu_vec) & mu_vec > 0
+disp_vec <- disp_vec[keep]; mu_vec <- mu_vec[keep]
+
+res <- ssizeRNA_vary(nGenes = length(mu_vec), pi0 = 0.95, mu = mu_vec, disp = disp_vec,
+                     fc = 1.5, fdr = 0.05, power = 0.80, maxN = 200)
+res$ssize[, "ssize"]                                      # minimum DONORS per group -- NOT cells
+# Verified on synthetic 8-donor pilot (donor dispersion 0.35, 150 cells/donor): pseudobulk median
+# dispersion recovered at 0.32; donor count from ssizeRNA_vary = 84 at fc=1.5 (comparable order to
+# the bulk case above -- donors are the same statistical unit as bulk replicates once pseudobulked).
+```
+
+## When No n Is Reachable
+
+`ssizeRNA_single`/`_vary` return `ssize = NA` **silently**, with no warning or error, when no n within `maxN` reaches the target -- this is not a computation failure, it means the search ceiling was too low or the target itself is unreachable. `check.power` returns `fdr_bh_ave = NaN` when the average number of BH discoveries is zero across simulations -- **a NaN true FDR means zero discoveries, not "FDR unknown."**
+
+1. If `ssize` is `NA`: raise `maxN` (e.g. 30 -> 200 -> 1000) and re-run before concluding anything.
+2. If it is still `NA` at a practically fundable `maxN` (a few hundred), report the achieved power at that `maxN` instead of a sample size — do not print `NA` as the answer.
+3. As a fallback, sweep the fold change upward at the affordable `n` until power reaches the target, and report that **minimum detectable fold change** instead of a sample size (a 1.2-fold target at 90% power can be unreachable at any fundable n — see Anticipated Reviewer Pushback).
+
+```r
+n <- res$ssize[, "ssize"]
+if (is.na(n)) stop("no n <= maxN reaches the target; raise maxN or revise fc/dispersion")
+```
+
+State the seed and the `sims`/`nsims` count alongside any reported n or power. None of these estimators are deterministic without `set.seed()`: `check.power`'s average power moved between 0.1015 and 0.1098 across unseeded calls at `sims = 20` in prior testing.
+
+## Proteomics Sample Size -- Per-Feature t-test Under Multiplicity
+
+**Goal:** Size a per-protein Gaussian test (Cohen's d, after a variance-stabilizing transform) while controlling the FDR across the whole panel, not just one protein at alpha 0.05.
+
+**Why per-protein alpha=0.05 is wrong:** `pwr.t.test(d = 1.2, sig.level = 0.05, power = 0.80)` returns n=12/group, which looks adequate against the assay-floor table below — but at 5,000 proteins with 10% truly changed and 20% MNAR dropout, n=12 delivers a BH marginal power of only ~0.03, not 0.80. Adjust `sig.level` for the panel size before sizing.
+
+```r
+library(pwr)
+m_effective <- 5000                                      # proteins actually tested after missingness filtering
+pwr.t.test(d = 1.2, sig.level = 0.05 / m_effective, power = 0.80)   # Bonferroni: n ~= 44/group
+# Bonferroni is the conservative default here; a simulation-based BH sweep (simulate m_effective
+# proteins with the expected proportion changed, run BH, sweep n) gives a tighter n when few
+# proteins are truly changed, at the cost of writing the simulation instead of a closed form.
+```
+
+The Sample Size by Assay table's Proteomics row (below) is a floor for validating a single already-known marker, not for a proteome-wide discovery panel — for a panel, size from the alpha-adjusted `pwr.t.test` above, not the floor.
 
 ## Biological vs Technical Replication
 
@@ -93,14 +206,14 @@ Once depth is adequate (roughly >=10-20M mapped reads for bulk RNA-seq DE), addi
 
 | Assay | Practical minimum | For small effects | Source / note |
 |-------|-------------------|-------------------|---------------|
-| Bulk RNA-seq | 3 (convention) | 6-12 | Schurch 2016 *RNA* 22:839: >=6 recovers most true DE |
+| Bulk RNA-seq | 3 (convention) | 6-12 | Schurch 2016 *RNA* 22:839: >=6 recovers most true DE across a realistic FC spectrum -- NOT the same n as 80% power at one fixed FC (see Quantitative Thresholds) |
 | scRNA-seq (population DE) | 3 donors | 6+ donors | Squair 2021; donors, not cells, drive power |
 | ATAC-seq | 2 | 4-6 | library complexity + peak detection floor |
 | ChIP-seq | 2 | 3-4 | IDR reproducibility framework (ENCODE) |
-| Proteomics (DIA/TMT) | 3 | 6-10 | higher missingness; MNAR |
+| Proteomics (DIA/TMT) | 3 | 6-10 | single-marker validation floor ONLY; a proteome-wide panel needs the alpha-adjusted `pwr.t.test` above (n~=12-44/group at d=1.2 depending on correction), not this row |
 | Methylation (array/WGBS) | 4 | 8-12 | high per-CpG variance |
 
-The "minimum" columns are floors that assume low dispersion and large effects; treat them as the smallest defensible n only after a pilot or literature dispersion supports them.
+The "minimum" columns are floors that assume low dispersion and large effects; treat them as the smallest defensible n only after a pilot or literature dispersion supports them. For human-donor cohorts (tumor vs normal, disease vs control), these floors and any failure margin are a starting point, not a substitute for the approved protocol -- see the ethics note under Quantitative Thresholds.
 
 ## Per-Method Failure Modes
 
@@ -139,6 +252,10 @@ The "minimum" columns are floors that assume low dispersion and large effects; t
 | Depth saturates ~10-20M reads; add replicates | Liu 2014 *Bioinformatics* 30:301 | biological variance dominates |
 | Add 10-20% extra units for failures | common practice | RNA degradation, failed libraries |
 
+**">=6" is not the same question as this Skill's calculation, and the two are ~10x apart in this Skill's own worked example.** Schurch's ">=6" is an empirical *recovery* benchmark averaged over a real spectrum of fold changes (most genes change by less than any single target FC). The `ssizeRNA`/PROPER calculations above answer "what n gives 80% *marginal* power at one *fixed minimum* fold change" -- a stricter question. At the Skill's own example parameters (20,000 genes, disp 0.2, 1.5-fold, FDR 0.05) that calculation returns **n in the mid-40s at mu=200, up to 74 at the toy mu=10 an earlier version of this Skill used**, not 6. Report both numbers when quoting either: Schurch's floor as the absolute minimum for any realistic recovery, and the fixed-FC calculation as the n for a defensible, on-target power claim. Do not average or reconcile them into one number -- they are answers to different questions.
+
+**Ethics/protocol note for human-donor cohorts:** when sizing tumor-vs-normal, disease-vs-control or other human-donor studies, the replicate count -- including the 10-20% failure margin above -- must match what the approved IRB/ethics protocol specifies for that cohort. Recruiting additional donors purely to cover the failure margin has its own consent and recruitment implications; a power calculation justifies the number but does not by itself authorize recruiting it.
+
 ## Common Errors
 
 | Error / symptom | Cause | Solution |
@@ -155,7 +272,7 @@ The "minimum" columns are floors that assume low dispersion and large effects; t
 |----------|----------|
 | "Why this n?" | smallest n reaching marginal power >= 0.8 at FDR 0.05 for the minimum meaningful FC; power curve provided |
 | "Where did dispersion come from?" | estimated from pilot (DESeq2); literature value used only as a cross-check |
-| "Is n=3 enough?" | no; sized to >=6 per Schurch 2016 for realistic effects |
+| "Is n=3 enough?" | no; >=6 is Schurch 2016's floor for recovery over a realistic FC spectrum, but the fixed-FC calculation for this specific target fold change can require far more (n in the mid-40s to 74, depending on the assumed mean count, at 1.5-fold in this Skill's own example) — quote the fixed-FC number, not just the floor |
 | "Why so many donors for scRNA-seq?" | population DE power scales with donors, not cells (Squair 2021) |
 | "Technical replicates?" | collapsed to biological units; they add no biological degrees of freedom |
 
