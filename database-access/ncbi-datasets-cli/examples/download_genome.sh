@@ -1,5 +1,5 @@
 #!/bin/bash
-# Reference: NCBI Datasets CLI 16.0+ | Verify API if version differs
+# Reference: NCBI Datasets CLI 18.37.0 (checked 2026-09-19) | Verify API if version differs
 # Single-assembly download with auto MD5 + multiple file types.
 
 set -euo pipefail
@@ -26,7 +26,7 @@ JSONL="${DEST}/ncbi_dataset/data/assembly_data_report.jsonl"
 if [ -f "${JSONL}" ]; then
     dataformat tsv genome \
         --inputfile "${JSONL}" \
-        --fields accession,organism-name,assembly-level,scaffold-n50,contig-n50,total-sequence-length \
+        --fields accession,organism-name,assminfo-level,assmstats-scaffold-n50,assmstats-contig-n50,assmstats-total-sequence-len \
         | column -t
 fi
 

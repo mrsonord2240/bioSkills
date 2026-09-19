@@ -8,13 +8,19 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: NCBI Datasets CLI 16.0+ (2024), dataformat 16.0+
+Reference examples checked on NCBI Datasets CLI 18.37.0 / dataformat 18.37.0 (2026-09-19). Earlier
+docs pinned this Skill to 16.0+ (2024); the 16 -> 18 jump renamed the `dataformat --fields` catalog
+and changed `--ortholog` from a boolean flag to `--ortholog strings` (see Code patterns below).
 
 Before using code patterns, verify installed versions match. If versions differ:
-- CLI: `datasets --version`, `dataformat --version`
+- CLI: `datasets --version` (reliable). `dataformat --version` is broken on 18.37.0 -- it prints the
+  literal string `undefined` regardless of the real version. Confirm the `dataformat` build instead
+  via `dataformat --help`'s banner, or by checking it shipped alongside a known-good `datasets`
+  binary (they are always released as a matched pair).
 - Subcommand help: `datasets <subcommand> --help`
 
-If a subcommand or flag is unrecognized, run `datasets --help` and adapt. The CLI is under active development; major releases (v15 -> v16) added subcommands and renamed flags.
+If a subcommand or flag is unrecognized, run `datasets --help` and adapt. The CLI is under active
+development; major releases have added subcommands and renamed flags and fields.
 
 # NCBI Datasets CLI
 
@@ -35,8 +41,8 @@ conda install -c conda-forge ncbi-datasets-cli
 # Or direct download (Linux, macOS, Windows binaries)
 curl -O https://ftp.ncbi.nlm.nih.gov/pub/datasets/command-line/v2/linux-amd64/datasets
 
-datasets --version    # 16.0+ expected
-dataformat --version  # bundled companion tool
+datasets --version    # this doc was checked against 18.37.0
+dataformat --version  # bundled companion tool; broken on 18.37.0, see Version Compatibility
 ```
 
 ## What's in scope (use Datasets) vs out of scope (use E-utilities or other tools)
@@ -46,7 +52,7 @@ dataformat --version  # bundled companion tool
 | Genome assembly download | yes | — |
 | All reference genomes for a taxon | yes | — |
 | Gene record metadata (multi-species) | yes | — |
-| Ortholog data for a gene | yes (`datasets summary gene ... --ortholog`) | OrthoDB / Compara for tree-aware orthology |
+| Ortholog data for a gene | yes (`datasets summary gene ... --ortholog <taxon|all>`) | OrthoDB / Compara for tree-aware orthology |
 | Virus data (assemblies, metadata) | yes (`datasets download virus`) | — |
 | Annotation files (GFF3, GTF) for a genome | yes | — |
 | Protein records (curated, with cross-refs) | partial | UniProt REST for richer annotation |
@@ -93,11 +99,16 @@ For very large pulls (1000+ genomes), `--dehydrated` is the right choice: downlo
 
 ```bash
 datasets summary genome taxon "Escherichia coli" --reference --as-json-lines \
-  | dataformat tsv genome --fields accession,organism-name,assembly-level,scaffold-n50 \
+  | dataformat tsv genome --fields accession,organism-name,assminfo-level,assmstats-scaffold-n50 \
   > ecoli_refs.tsv
 ```
 
-`dataformat` subcommands match summary types: `genome`, `gene`, `virus-genome`, etc. The `--fields` list is documented per type via `dataformat tsv <type> --help`.
+`dataformat` subcommands match summary types: `genome`, `gene`, `virus-genome`, etc. The `--fields`
+list is documented per type via `dataformat tsv <type> --help` -- **always check it live**, do not
+reuse a list from an older doc. On 18.37.0 the genome catalog uses `assminfo-*` / `assmstats-*`
+prefixes (e.g. `assminfo-level`, `assmstats-scaffold-n50`, `assmstats-contig-n50`,
+`assmstats-total-sequence-len`) and the gene catalog uses `tax-name` (not `taxname`); there is no
+`nomenclature-authority-symbol` field on this build.
 
 ## When to use --dehydrated for cloud workflows
 
@@ -121,10 +132,10 @@ This is essential for HPC / cloud pipelines where inspection of the pending tran
 
 **Approach:** `datasets download genome accession ... --include ...`.
 
-**Reference (NCBI Datasets CLI 16.0+):**
+**Reference (NCBI Datasets CLI 18.37.0, checked 2026-09-19):**
 ```bash
 #!/bin/bash
-# Reference: NCBI Datasets CLI 16.0+ | Verify API if version differs
+# Reference: NCBI Datasets CLI 18.37.0 (checked 2026-09-19) | Verify API if version differs
 
 datasets download genome accession GCF_000001405.40 \
     --include genome,gff3,gtf,protein,cds,seq-report \
@@ -140,7 +151,7 @@ ls -lh human_grch38/ncbi_dataset/data/GCF_000001405.40/
 
 **Approach:** `--dehydrated` first for inspection; rehydrate with parallel pull.
 
-**Reference (NCBI Datasets CLI 16.0+):**
+**Reference (NCBI Datasets CLI 18.37.0, checked 2026-09-19):**
 ```bash
 #!/bin/bash
 # Step 1: dehydrated discovery
@@ -161,25 +172,39 @@ aria2c --input-file=bact_refs/ncbi_dataset/fetch.txt \
 
 ### Gene metadata across species
 
+`--taxon` on `summary gene symbol` is **single-species only** (it picks which species' gene record
+to resolve the symbol against; default `human`) -- it does not accept a clade like `Mammalia` and
+errors outright if you try (`gene requires an at-or-below-species-level taxon`). The only mechanism
+this subcommand has for a genuinely multi-species pull is `--ortholog <taxon|all>`, which accepts
+any taxonomic rank (not just `all`) and returns NCBI's ortholog set for that clade -- one
+representative gene per species, limited to vertebrates and insects:
+
 ```bash
 datasets summary gene symbol BRCA1 \
-    --taxon Mammalia \
+    --ortholog Mammalia \
     --as-json-lines \
-  | dataformat tsv gene --fields gene-id,symbol,taxname,description,nomenclature-authority,chromosomes \
+  | dataformat tsv gene --fields gene-id,symbol,tax-name,description,chromosomes \
   > brca1_mammals.tsv
 
 head brca1_mammals.tsv
 ```
 
+Verified live (18.37.0): this returns 272 real rows across Mammalia (human, mouse, rat, dog, cow,
+macaque, chimp, opossum, pig, ...). Outside vertebrates/insects, or for a single specific species,
+loop `--taxon <species>` per species instead.
+
 ### Find orthologs for a gene
 
 ```bash
-datasets summary gene symbol BRCA1 --taxon human --ortholog --as-json-lines \
-  | dataformat tsv gene --fields gene-id,symbol,taxname,description \
+datasets summary gene symbol BRCA1 --taxon human --ortholog all --as-json-lines \
+  | dataformat tsv gene --fields gene-id,symbol,tax-name,description \
   > brca1_orthologs.tsv
 ```
 
-`--ortholog` returns NCBI's ortholog set (a single representative per species; tree-aware orthology with multiple co-orthologs is in `ortholog-inference` / Compara / OMA).
+`--ortholog` takes a required value (`all`, or one or more taxa) -- a bare `--ortholog` flag is
+consumed as swallowing the next flag's value and fails with a misleading "taxonomy name not exact"
+error. It returns NCBI's ortholog set (a single representative per species; tree-aware orthology
+with multiple co-orthologs is in `ortholog-inference` / Compara / OMA).
 
 ### Filter assemblies by quality and date
 
@@ -188,13 +213,13 @@ datasets summary genome taxon "Salmonella enterica" \
     --assembly-level chromosome,complete \
     --released-after 2024-01-01 \
     --as-json-lines \
-  | dataformat tsv genome --fields accession,organism-name,assembly-level,scaffold-n50,submission-date \
+  | dataformat tsv genome --fields accession,organism-name,assminfo-level,assmstats-scaffold-n50,assminfo-release-date \
   > sal_2024.tsv
 ```
 
 ### Python wrapper with checksum + retry awareness
 
-**Reference (NCBI Datasets CLI 16.0+):**
+**Reference (NCBI Datasets CLI 18.37.0, checked 2026-09-19):**
 ```python
 import subprocess
 import json
@@ -220,7 +245,7 @@ genomes = datasets_summary('genome', 'taxon', 'Escherichia coli', '--reference')
 print(f'{len(genomes)} reference E. coli assemblies')
 for g in genomes[:3]:
     acc = g.get('accession')
-    n50 = g.get('assemblyStats', {}).get('contigN50')
+    n50 = g.get('assembly_stats', {}).get('contig_n50')  # snake_case JSON keys, not camelCase
     print(f'  {acc}  N50={n50}')
 
 datasets_download('genome', 'accession', 'GCF_000005845.2',
@@ -278,22 +303,30 @@ For genome workflows, Datasets is 5-50x faster than the equivalent E-utilities p
 - **Fix:** Pass `--api-key YOUR_KEY` to bulk commands; obtain from `https://www.ncbi.nlm.nih.gov/account/settings/`.
 
 ### CLI version drift
-- **Trigger:** Using Datasets v14 with v16 docs.
-- **Mechanism:** Subcommands and flags renamed between major versions.
-- **Symptom:** "Unknown flag" or different output structure.
-- **Fix:** Pin to v16+; `conda update ncbi-datasets-cli`.
+- **Trigger:** Running docs written for one CLI version against a different installed version (this
+  doc was last checked against 18.37.0; the previous pin was 16.0+, itself two major versions stale).
+- **Mechanism:** Subcommands, flags, and `dataformat --fields` names get renamed between major
+  releases.
+- **Symptom:** "Unknown flag", "field(s) [...] not recognized", or different output structure.
+- **Fix:** Don't trust a version pin in any doc, this one included. Re-verify against
+  `datasets <subcommand> --help` / `dataformat tsv <type> --help` for the version actually
+  installed (`datasets --version`; `conda update ncbi-datasets-cli` if you need current).
 
 ## Common errors
 
 | Error / symptom | Cause | Solution |
 |---|---|---|
 | "command not found: datasets" | Not installed | `conda install -c conda-forge ncbi-datasets-cli` |
-| Subcommand not found | Old version | Upgrade to v16+ |
+| Subcommand not found | Old version | `conda update ncbi-datasets-cli`; re-check `datasets --help` |
 | Slow 1000-genome pull | Serial download | Use `--dehydrated` + aria2c |
 | "Unknown field" in dataformat | Wrong field name | Check `dataformat <type> --help` |
 | Throttled bulk pull | No API key | Pass `--api-key` |
 | `--reference` returns 1 per species | By design | Drop the flag or use `--assembly-level` |
 | MD5 mismatch retried | Network issue | Datasets retries automatically; persistent failure -> investigate network |
+| `{"total_count": 0}`, exit code 0 | Accession doesn't exist, was withdrawn, or was superseded | Exit 0 alone is not success for `summary`/`download` -- check for a nonzero record/file count too; verify the accession at ncbi.nlm.nih.gov/datasets |
+| "gene requires an at-or-below-species-level taxon" | `--taxon` given a clade (e.g. Mammalia), not a species | Use `--ortholog <clade\|all>` for cross-species gene queries instead |
+| "The taxonomy name '--as-json-lines' is not exact" (unrelated taxa suggested) | Bare `--ortholog` flag swallowed the next flag as its value | Always give `--ortholog` an explicit value: `--ortholog all` or `--ortholog <taxon>` |
+| `dataformat version` prints `undefined` | Unimplemented on this build | Check `dataformat --help`'s banner, or confirm it shipped with a known-good `datasets` binary |
 
 ## References
 
