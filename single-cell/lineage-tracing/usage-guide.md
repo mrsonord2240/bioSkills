@@ -6,9 +6,9 @@ Lineage tracing reads heritable marks (CRISPR/Cas9 scars, static expressed barco
 
 ## Prerequisites
 
-```bash
-pip install cassiopeia-lineage cospar scanpy
-```
+Cassiopeia and CoSpar/scanpy need two separate environments (numpy version conflict) —
+see SKILL.md's "Installation and Version Compatibility" section for the exact commands.
+Do not `pip install cassiopeia-lineage`: that PyPI name is a stale, unrelated package.
 
 ## Quick Start
 
@@ -48,17 +48,9 @@ Tell your AI agent what you want to do:
 6. Compare trees with Robinson-Foulds and depth-stratified triplets-correct
 7. Integrate clone with state (CoSpar) to recover hidden fate bias and test state->fate
 
-## Tips
-
-- **State does not predict fate** - Weinreb 2020 showed sisters in the same state diverge; lineage data is orthogonal to expression, not redundant.
-- **Missing is not unedited** - keep the -1 missing state distinct from 0; collapsing them is the most consequential preprocessing error because heritable dropout deletes whole clades and biases topology.
-- **Homoplasy breaks parsimony** - non-uniform Cas9 indels mean unrelated cells share frequent scars; weight indels by probability and use Startle's star-homoplasy model under heavy convergence.
-- **Run a solver panel** - VanillaGreedy/Hybrid/ILP/NJ rarely agree everywhere; agreement is the practical certainty signal. HybridSolver is the scalable default.
-- **Deep splits are least certain** - early near-root splits rest on the fewest, most-overwritten characters yet matter most; report branch support and trust leaf structure more.
-- **mtDNA gives clonal grouping, not deep trees** - low mutation rate, hotspot homoplasy, heteroplasmy drift, and selection limit it; blacklist NUMTs, RNA-edit, and hotspot positions.
-- **Prospective vs retrospective matters** - only prospective barcodes installed before the process can test state->fate; retrospective mtDNA recovers ancestry but cannot establish the preceding state.
-- **Static barcodes are flat clones** - LARRY/CellTag give clonal membership, not division-order topology; use library complexity far above founder number to avoid collisions.
-- **Integrate clone with state** - CoSpar recovers fate bias from sparse clones rather than assuming the manifold encodes fate, but does not build a phylogeny.
+See SKILL.md's Governing Principle, Assay Decision Table, and Common Errors sections for
+the underlying reasoning (state vs. fate, missing-vs-unedited, homoplasy, solver choice,
+mtDNA clonal grouping) — those facts live there, not here.
 
 ## Related Skills
 

@@ -1,5 +1,7 @@
 '''Clonal dynamics analysis with CoSpar'''
-# Reference: cassiopeia 2.0+, matplotlib 3.8+, numpy 1.26+, scanpy 1.10+ | Verify API if version differs
+# Reference: cospar 0.5.0, scanpy 1.12.4, numpy 2.5.3 | Verify API if version differs
+# Run in a dedicated CoSpar env (numpy>=2) -- see SKILL.md "Installation and Version
+# Compatibility" for why Cassiopeia and CoSpar/scanpy cannot share one env.
 import cospar as cs
 import scanpy as sc
 
