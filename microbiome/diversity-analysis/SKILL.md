@@ -18,6 +18,23 @@ Before using code patterns, verify installed versions match. If versions differ:
 If code throws ImportError, AttributeError, or TypeError, introspect the installed
 package and adapt the example to match the actual API rather than retrying.
 
+## Required Setup
+
+```r
+BiocManager::install(c('phyloseq', 'picante'))
+install.packages(c('vegan', 'GUniFrac'))
+```
+
+```bash
+# QIIME2 installs as its own conda env (the release tag defines the plugin API and .qza format)
+conda env create -n qiime2-amplicon-2024.2 --file https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.2-py39-linux-conda.yml
+pip install scikit-bio   # Python engine under q2-diversity
+```
+
+Needs an ASV/OTU feature table of integer counts (DADA2/Deblur or a QIIME2 `FeatureTable[Frequency]`)
+plus representative sequences if a tree must be built, and sample metadata with the grouping/covariate
+columns. Reference packages for SEPP (e.g. Greengenes 13_8 or SILVA) are large downloads.
+
 scikit-bio 0.6.0 renamed OTU to taxon across the API and drifted metric kwargs (`otu_ids=` vs newer forms) - discover names with `skbio.diversity.get_beta_diversity_metrics()` before hard-coding. UniFrac/Faith PD results inherit the tree (de novo vs SEPP vs Greengenes2 reference build) AND the chosen sampling depth - record both alongside the QIIME2 release that produced the `.qza` artifacts.
 
 # Diversity Analysis
@@ -144,7 +161,16 @@ gu  <- as.dist(GUniFrac::GUniFrac(t(as(otu_table(ps_rare), 'matrix')), phy_tree(
 meta <- data.frame(sample_data(ps_rare))
 adonis2(wu ~ Group, data = meta, permutations = 999)   # >=999 permutations; significance = LOCATION
 permutest(betadisper(wu, meta$Group))                  # MANDATORY: is it dispersion, not location?
+
+# repeated measures / non-independent samples (subjects sampled at multiple visits, matched pairs):
+# restrict permutations within subject with strata=, mirroring the alpha-diversity escalation above.
+adonis2(wu ~ Group, data = meta, permutations = 999, strata = meta$SubjectID)
 ```
+
+Pooling repeated samples per subject without `strata=` pseudo-replicates: on a real 3-visit-per-subject
+fixture, the naive pooled test gave R2=0.053, p=0.098 while the `strata=SubjectID`-restricted version
+gave the same R2 but p=1 - the naive p-value overstated the evidence. Any design with subjects sampled
+more than once (longitudinal visits, technical replicates, matched pairs) needs `strata=`.
 
 If betadisper is significant the adonis2 result is ambiguous (location vs spread) - state it. The PERMANOVA-dispersion theory is shared; see metagenomics/metagenome-visualization. For a compositionally coherent ordination with feature loadings use RPCA (DEICODE `qiime deicode rpca` / gemelli). The Python engine is scikit-bio (`skbio.diversity.beta_diversity`, `skbio.stats.ordination.pcoa`, `skbio.stats.distance.permanova`).
 
