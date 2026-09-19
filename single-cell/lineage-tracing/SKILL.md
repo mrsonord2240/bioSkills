@@ -6,15 +6,46 @@ primary_tool: Cassiopeia
 license: MIT
 ---
 
-## Version Compatibility
+## Installation and Version Compatibility
 
-Reference examples tested with: Cassiopeia 2.0+, CoSpar 0.3+, scanpy 1.10+, numpy 1.26+
+Cassiopeia and CoSpar/scanpy do not coexist in one Python environment: Cassiopeia 2.0's
+compiled solver code needs `numpy<2` (it imports the removed private API
+`numpy.lib.arraysetops`), while CoSpar's dependency chain (via scanpy 1.12+) requires
+`numpy>=2`. Installing both into the same environment silently upgrades numpy and
+breaks `import cassiopeia`. **Use two environments and hand tree/clone output between
+them through a file** (Newick, CSV, h5ad) — never a shared Python process.
 
-Before using code patterns, verify installed versions match. If versions differ:
-- Python: `pip show <package>` then `help(module.function)` to check signatures
+```bash
+# Env 1 -- tree reconstruction (checked on Cassiopeia 2.0.0, numpy 1.26.4)
+conda create -n cassiopeia -c bioconda -c conda-forge cassiopeia
 
-If code throws ImportError, AttributeError, or TypeError, introspect the installed
-package and adapt the example to match the actual API rather than retrying.
+# Env 2 -- clone + state integration (checked on CoSpar 0.5.0, scanpy 1.12.4, numpy 2.5.3)
+conda create -n cospar python=3.12
+conda activate cospar && pip install cospar scanpy
+
+# Optional -- Startle NNI refinement under severe homoplasy (checked on Startle 1.0.0)
+conda create -n startle -c schmidt73 -c bioconda -c conda-forge startle
+```
+
+**Do not `pip install cassiopeia-lineage`.** That PyPI name is a stale, unrelated 2018
+release (v1.0.4, pins `numpy<1.15`, fails to build on modern Python) exposing a legacy
+API with none of the `cas.data`/`cas.solver`/`cas.pp`/`cas.critique` submodules used
+below. The Cassiopeia matching every example here is bioconda-only.
+
+`ILPSolver` (and therefore `HybridSolver`, which uses it as the bottom solver by
+default) needs a separately licensed Gurobi install (`gurobipy`). Without one,
+`ILPSolver().solve(...)` fails with an unrelated-looking `ValueError`, not a licensing
+message. Use `HybridSolver(bottom_solver=VanillaGreedySolver())` (greedy/greedy) as a
+license-free fallback.
+
+Reference examples tested with: Cassiopeia 2.0.0, CoSpar 0.5.0, scanpy 1.12.4, Startle 1.0.0.
+
+Before using code patterns, verify installed versions match: `pip show <package>` then
+`help(module.function)` to check signatures. If code throws ImportError, AttributeError,
+or TypeError, introspect the installed package and adapt the example to match the
+actual API rather than retrying — for example, the installed `NeighborJoiningSolver`
+raises `DistanceSolverError` exactly as written below unless constructed with
+`add_root=True`; `help(cas.solver.NeighborJoiningSolver)` shows that argument.
 
 # Lineage Tracing
 
@@ -49,7 +80,7 @@ For scar data, the solver is a separate choice from the assay (Cassiopeia, Jones
 | Solver | Model | Use when | Fails when |
 |--------|-------|----------|------------|
 | VanillaGreedySolver | top-down parsimony, split on most-frequent mutation | fast first pass; 10^4-10^5 cells | greedy split errors propagate; sensitive to homoplasy |
-| ILPSolver | integer-LP Steiner tree (Gurobi); near-optimal | small clades needing accuracy | expensive; does not scale to large trees |
+| ILPSolver | integer-LP Steiner tree (Gurobi); near-optimal | small clades needing accuracy | expensive; does not scale to large trees; needs a separately licensed Gurobi install |
 | HybridSolver | greedy top + ILP on small subclades | the practical default for large data | inherits greedy errors at the top split |
 | NeighborJoiningSolver | distance-based (weighted Hamming) | quick comparison baseline; non-character distances | less accurate than parsimony on scar characters |
 | Startle (Startle-ILP / Startle-NNI) | star-homoplasy: a character mutates at most once per root-to-leaf path | severe homoplasy/dropout breaks parsimony | ILP cost; NNI is heuristic at scale |
@@ -66,7 +97,7 @@ import cassiopeia as cas
 import numpy as np
 
 tree = cas.data.CassiopeiaTree(character_matrix=char_matrix, cell_meta=cell_meta)
-print(f'cells {tree.n_cell}  characters {tree.n_character}  missing {(char_matrix == -1).mean():.2%}')
+print(f'cells {tree.n_cell}  characters {tree.n_character}  missing {(char_matrix.values == -1).mean():.2%}')
 
 solver = cas.solver.VanillaGreedySolver()
 solver.solve(tree, collapse_mutationless_edges=True)   # collapse edges with no supporting mutation
@@ -81,8 +112,11 @@ The `-1` missing state must stay distinct from the `0` unedited state: collapsin
 **Approach:** Solve with several solvers, then compare the resulting trees with Robinson-Foulds and the depth-stratified triplets-correct metric.
 
 ```python
+# bottom_solver=ILPSolver() needs a licensed Gurobi install (see Installation); swap in
+# VanillaGreedySolver() as the bottom_solver for a license-free greedy/greedy fallback
 hybrid = cas.solver.HybridSolver(top_solver=cas.solver.VanillaGreedySolver(), bottom_solver=cas.solver.ILPSolver(), cell_cutoff=200)
-nj = cas.solver.NeighborJoiningSolver(dissimilarity_function=cas.solver.dissimilarity_functions.weighted_hamming_distance)
+# add_root=True is required by the installed API, not optional -- omitting it raises DistanceSolverError
+nj = cas.solver.NeighborJoiningSolver(dissimilarity_function=cas.solver.dissimilarity_functions.weighted_hamming_distance, add_root=True)
 for s in (hybrid, nj):
     s.solve(tree)                                       # solve independent copies in practice
 rf, rf_max = cas.critique.robinson_foulds(tree_a, tree_b)
@@ -122,6 +156,84 @@ cs.pl.fate_bias(adata, selected_fates=['Monocyte', 'Neutrophil'])
 
 CoSpar operationalizes Weinreb 2020: it propagates fate probabilities onto cells lacking clonal labels and is robust to severe downsampling of lineage data, but it needs paired clone + state and does NOT build a phylogenetic tree (clones are flat). CoSpar needs MULTIPLE independent clones to be lineage-informed; with effectively one clone the constraint is vacuous and the transition map degenerates to transcriptomic similarity, the state-only answer CoSpar exists to correct. For tree topology from scars, use Cassiopeia or Startle.
 
+`infer_Tmap_from_multitime_clones` scales poorly: ~10 minutes for a 200-cell toy dataset
+with the default `smooth_array=[15, 10, 5]`. Expect substantially longer on real datasets;
+use a smaller `smooth_array` for a first exploratory pass.
+
+### Group Clones from mtDNA Heteroplasmy
+
+**Goal:** Turn a cells x variants heteroplasmy matrix into a clonal grouping — retrospective tracing recovers clonal blobs, never a deep ordered tree (see Assay Decision Table).
+**Approach:** Blacklist hotspot/NUMT-like variants that are common regardless of clone, then cluster the remaining heteroplasmy profile and pick the clone count by silhouette score.
+
+```python
+import pandas as pd
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist
+from sklearn.metrics import silhouette_score
+
+het = pd.read_csv('mtdna_heteroplasmy.csv', index_col=0)   # cells x variants, values in [0, 1]
+
+# A variant present (heteroplasmy > 0.1) in most cells cannot discriminate clones --
+# treat it as a hotspot/NUMT signature and drop it rather than trusting it as a mark.
+prevalence = (het > 0.1).mean(axis=0)
+het_f = het.loc[:, prevalence <= 0.8]
+
+dist = pdist(het_f.values, metric='correlation')
+Z = linkage(dist, method='average')
+
+# Choose the clone count by silhouette score over a small candidate range
+best_k, best_score, best_labels = None, -1, None
+for k in range(2, 8):
+    labels = fcluster(Z, t=k, criterion='maxclust')
+    if len(set(labels)) < 2:
+        continue
+    score = silhouette_score(het_f.values, labels, metric='correlation')
+    if score > best_score:
+        best_k, best_score, best_labels = k, score, labels
+
+clones = pd.Series(best_labels, index=het.index, name='mtdna_clone')
+```
+
+Verified on a synthetic 40-cell/10-variant heteroplasmy matrix with 4 planted clones plus
+one recurrent hotspot variant: the blacklist step drops exactly the hotspot, and
+clustering recovers the 4 planted clones exactly (adjusted Rand index 1.0). Report this
+as a clonal grouping only — never branch order or divergence times.
+
+### Refine a Tree Under Severe Homoplasy with Startle
+
+**Goal:** Re-optimize a seed tree's topology under the star-homoplasy model (each character mutates at most once per root-to-leaf path), for data too homoplastic for greedy parsimony to trust.
+**Approach:** Build a fast seed tree (`VanillaGreedySolver`), export it and the character matrix, and let Startle's NNI hill-climber (CLI, not a Python import) search for lower-weighted-parsimony topologies.
+
+```python
+solver = cas.solver.VanillaGreedySolver()
+solver.solve(tree, collapse_mutationless_edges=True)
+with open('seed_tree.newick', 'w') as f:
+    f.write(tree.get_newick())
+
+# Startle wants per-character, per-state mutation priors as a long CSV. From raw reads,
+# convert_alleletable_to_character_matrix already returns these (see above); from a
+# plain character matrix, estimate them empirically:
+rows = []
+for c in char_matrix.columns:
+    col = char_matrix[c]
+    edited = col[(col != 0) & (col != -1)]
+    for state, p in edited.value_counts(normalize=True).items():
+        rows.append({'character': c, 'state': int(state), 'probability': float(p)})
+pd.DataFrame(rows).to_csv('startle_priors.csv', index=False)
+char_matrix.to_csv('startle_char_matrix.csv')   # row index must match the Newick leaf names
+```
+
+```bash
+startle large startle_char_matrix.csv startle_priors.csv seed_tree.newick \
+    --output refined --iterations 100
+```
+
+`refined_tree.newick` is the re-optimized topology; `refined_info.json` reports the
+weighted parsimony score per iteration, so you can confirm the search actually improved
+on the seed tree instead of trusting the exit code. Verified on this Skill's own
+60-cell/16-site synthetic scar matrix: a VanillaGreedySolver seed tree at weighted
+parsimony ~7.5 was refined to 6.59 over 20 NNI iterations.
+
 ## Threshold and Parameter Rationale
 
 | Parameter | Typical value | Rationale |
@@ -145,6 +257,8 @@ CoSpar operationalizes Weinreb 2020: it propagates fate probabilities onto cells
 | Deep splits flip between solvers | early splits rest on the fewest, most-overwritten characters | report branch support; trust leaf structure more than the root; run a solver panel |
 | mtDNA "tree" is actually clonal blobs | low somatic mutation rate; hotspot homoplasy; heteroplasmy drift and selection | claim clonal grouping not deep ordered trees; blacklist NUMTs/RNA-edit/hotspot sites |
 | State-based branch call confidently wrong | state underdetermines fate (Weinreb 2020); map is one-to-many | frame fate as a prediction; validate with prospective lineage data, integrate with CoSpar |
+| ILPSolver/HybridSolver fails with a cryptic, unrelated-looking error | `gurobipy` not installed or licensed | use `HybridSolver(bottom_solver=VanillaGreedySolver())`, or license Gurobi |
+| Tree/clone output used to claim malignancy or treatment need | a clonal/lineage tree shows ancestry and clonal relationships only, not histopathology | decline the diagnostic or treatment claim; recommend pathologist/oncologist review |
 
 ## Related Skills
 
