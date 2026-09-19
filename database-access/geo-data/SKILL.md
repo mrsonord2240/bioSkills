@@ -203,7 +203,7 @@ def check_super_or_sub_series(gse):
     urllib.request.urlretrieve(url, f'{gse}.soft.gz')
     super_of = []
     sub_of = None
-    with gzip.open(f'{gse}.soft.gz', 'rt') as f:
+    with gzip.open(f'{gse}.soft.gz', 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('!Series_relation'):
                 if 'SuperSeries of' in line:
@@ -236,7 +236,7 @@ def download_series_matrix(gse):
 
 def parse_series_matrix(path):
     metadata = {}
-    with gzip.open(path, 'rt') as f:
+    with gzip.open(path, 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('!series_matrix_table_begin'):
                 break
