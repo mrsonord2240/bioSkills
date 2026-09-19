@@ -1,5 +1,5 @@
 #!/bin/bash
-# Reference: NCBI Datasets CLI 16.0+, aria2c 1.36+ | Verify API if version differs
+# Reference: NCBI Datasets CLI 18.37.0 (checked 2026-09-19), aria2c 1.36+ | Verify API if version differs
 # Bulk pull via --dehydrated + parallel transfer (the cloud / HPC pattern).
 
 set -euo pipefail
@@ -26,9 +26,18 @@ echo "  Files queued: $(wc -l < ${FETCH})"
 
 echo
 echo "=== Step 2: parallel transfer with aria2c ==="
-# The fetch.txt format is: <url> [TAB] <path-relative-to-data-dir>
-# Older aria2c doesn't accept this format; transform to input file:
-awk -F'\t' '{print $1"\n  out="$2}' "${FETCH}" > "${DEST}/aria2_input.txt"
+# The fetch.txt format (checked on Datasets CLI 18.37.0) is 3 tab-separated columns:
+# <url> [TAB] <byte-size-placeholder, always "0"> [TAB] <path-relative-to-data-dir>
+# The real path is the 3rd field, not the 2nd -- using $2 here writes "out=0" for
+# every row and silently collides every download onto a file literally named "0".
+awk -F'\t' '{print $1"\n  out="$3}' "${FETCH}" > "${DEST}/aria2_input.txt"
+
+# Sanity check: fail loudly instead of silently corrupting every filename.
+if grep -q '^  out=0$' "${DEST}/aria2_input.txt"; then
+    echo "ERROR: aria2_input.txt has an 'out=0' line -- fetch.txt's column layout" >&2
+    echo "       changed again; re-check with 'awk -F\"\\t\" \"{print NF}\" ${FETCH}'" >&2
+    exit 1
+fi
 
 aria2c \
     --input-file="${DEST}/aria2_input.txt" \
