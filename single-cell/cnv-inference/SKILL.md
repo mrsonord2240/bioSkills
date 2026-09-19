@@ -106,6 +106,35 @@ cna <- res$CNAmat
 
 `res$prediction$copykat.pred` is `aneuploid`, `diploid`, or `not.defined` per cell; `res$CNAmat` holds smoothed copy-number values in ~220 kb bins (the output bin size; effective detection resolution is still ~5 Mb). `KS.cut` controls segmentation stringency (raise it for fewer, larger segments). Supplying confident normal barcodes via `norm.cell.names` anchors the diploid baseline and improves accuracy when the sample is mostly aneuploid.
 
+## SCEVAN - reference-free automatic malignant + subclone calling
+
+**Goal:** Get malignant/non-malignant classification and clonal substructure from a single call, without an annotated reference.
+
+**Approach:** Pass the raw gene-by-cell matrix to `pipelineCNA()`; SCEVAN finds a confident-normal baseline internally (or use known normal barcodes via `norm_cell`, which also skips its gene-set-based normal-cell search), classifies tumor vs normal, and optionally segments subclones. `pipelineCNA()` has no `plot=FALSE` switch - it always writes heatmap/segment PNGs to `./output/` as a side effect, and on a sparse or small cohort that internal plotting step can throw after classification has already completed and printed its result, so wrap the call in `tryCatch()` and treat a caught error there as "classification finished, plotting failed" rather than a broken run.
+
+```r
+library(SCEVAN)
+
+results <- tryCatch({
+    pipelineCNA(
+        count_mtx,
+        sample = 'tumor1',
+        par_cores = 4,
+        norm_cell = normal_cell_names,
+        SUBCLONES = TRUE,
+        ClonalCN = TRUE,
+        plotTree = FALSE,
+        organism = 'human',
+        ngenes_chr = 5)
+}, error = function(e) {
+    message('pipelineCNA() classification completed (see the "found N tumor cells" ',
+            'console line); its own plotting step then threw: ', conditionMessage(e))
+    NULL
+})
+```
+
+(checked on SCEVAN 1.0.3.) `count_mtx` needs real gene symbols spanning enough chromosomes for SCEVAN's internal Ensembl lookup (`annotateGenes`, autosomes 1-22 only) - a small custom panel covering only a few chromosomes fails the `ngenes_chr`-per-chromosome coverage filter for every cell. `norm_cell` (optional) supplies known non-malignant barcodes directly, matching copyKAT's `norm.cell.names`; omitted, SCEVAN searches for confident normal cells itself via gene-set enrichment, which needs a large enough gene panel to find enough overlapping genes per set. `results$class` is `tumor`, `normal`, or `filtered` per cell; with `SUBCLONES = TRUE` it adds a subclone column. Console output reports `"found N tumor cells"` right after classification, before any plotting runs - that line is the ground truth even if the call later errors and returns `NULL`.
+
 ## Numbat - haplotype-aware allele + expression
 
 **Goal:** Resolve subclones and copy-neutral LOH by combining smoothed expression with phased B-allele frequencies.
@@ -136,7 +165,7 @@ out <- run_numbat(
 nb <- Numbat$new(out_dir = 'numbat_out')
 ```
 
-`df_allele` is the allele dataframe written by `pileup_and_phase.R` (columns include `cell`, `snp_id`, `CHROM`, `POS`, `AD`, `DP`, `GT`). `lambdas_ref` is a gene-by-cell-type expression reference from `aggregate_counts(count_mat, cell_annot)` where `cell_annot` has `cell` and `group` columns, or the package-shipped `ref_hca`. `t` is the HMM transition probability. The loaded `Numbat` object exposes `clone_post` (clone assignments) and per-cell copy-number posteriors. Numbat needs no paired-normal DNA but does need a BAM and phasing reference.
+`df_allele` is the allele dataframe written by `pileup_and_phase.R`, with one row per SNP per cell. `run_numbat()`'s own input check (`check_allele_df()`) hard-requires ten columns: `cell`, `snp_id`, `CHROM`, `POS`, `cM`, `REF`, `ALT`, `AD`, `DP`, `GT` - a `df_allele` missing `cM`, `REF`, or `ALT` is rejected before any computation runs (checked on numbat 1.5.2). `cM` (genetic-map position) comes from the genetic-map file passed to `pileup_and_phase.R` via `--gmap`; `REF`/`ALT` are the reference/alternate alleles at each SNP. `lambdas_ref` is a gene-by-cell-type expression reference from `aggregate_counts(count_mat, cell_annot)` where `cell_annot` has `cell` and `group` columns, or the package-shipped `ref_hca`. `t` is the HMM transition probability. The loaded `Numbat` object exposes `clone_post` (clone assignments) and per-cell copy-number posteriors. Numbat needs no paired-normal DNA but does need a BAM and phasing reference.
 
 ## Turning the inferCNV heatmap into per-cell malignant calls
 
@@ -153,12 +182,14 @@ infercnv_obj <- infercnv::run(
 seurat_obj <- infercnv::add_to_seurat(
     seurat_obj = seurat_obj, infercnv_output_path = 'infercnv_out', top_n = 10)
 
-obs <- read.table('infercnv_out/infercnv.observations.txt', header = TRUE, row.names = 1)
+infercnv_obj_final <- readRDS('infercnv_out/run.final.infercnv_obj')
+obs_idx <- unlist(infercnv_obj_final@observation_grouped_cell_indices)
+obs <- infercnv_obj_final@expr.data[, obs_idx]
 cnv_score <- colSums((obs - 1)^2)
 malignant <- cnv_score > quantile(cnv_score, 0.5)
 ```
 
-`analysis_mode = 'subclusters'` (with `cluster_by_groups = FALSE`) partitions the observation cells by CNV signal so a malignant subcluster separates from a copy-neutral one. The per-cell CNV score (sum of squared deviation of the denoised `infercnv.observations.txt` profile from the copy-neutral value, or each cell's correlation to the mean putative-tumor profile) gives a continuous malignancy axis to threshold; `add_to_seurat` writes per-cell and per-chromosome CNA metadata back onto the object for plotting. The malignant/normal cut is a hypothesis: confirm it against lineage markers (single-cell/cell-annotation) and allele or mutation evidence, never treat the threshold as ground truth.
+`analysis_mode = 'subclusters'` (with `cluster_by_groups = FALSE`) partitions the observation cells by CNV signal so a malignant subcluster separates from a copy-neutral one. Under inferCNV 1.22's default HMM/subclusters mode, the denoised per-cell profile is written only inside `run.final.infercnv_obj` (`@expr.data`, columns indexed by `@observation_grouped_cell_indices`) - the older plain-text `infercnv.observations.txt` is no longer written, so load the object and index into it directly rather than reading that file. The per-cell CNV score (sum of squared deviation of the denoised profile from the copy-neutral value, or each cell's correlation to the mean putative-tumor profile) gives a continuous malignancy axis to threshold; `add_to_seurat` writes per-cell and per-chromosome CNA metadata back onto the object for plotting. The malignant/normal cut is a hypothesis: confirm it against lineage markers (single-cell/cell-annotation) and allele or mutation evidence, never treat the threshold as ground truth.
 
 ## Threshold and parameter reference
 
@@ -171,7 +202,10 @@ malignant <- cnv_score > quantile(cnv_score, 0.5)
 | win.size | copyKAT | 25 | Genes per segment for smoothing; larger windows denoise but blur small events |
 | KS.cut | copyKAT | 0.1 | Segmentation stringency; raise for fewer, larger segments in noisy data |
 | genome | copyKAT | hg20 | Must match the assembly the gene coordinates came from (hg20 or mm10) |
+| min.gene.per.cell | copyKAT | 200 | Minimum genes detected per cell to keep it; lower for small/custom gene panels (default drops every cell on a panel under ~200 genes) |
 | t | Numbat | 1e-5 | HMM transition probability; lower favors longer segments |
+| df_allele columns | Numbat | required | `check_allele_df()` hard-requires `cell, snp_id, CHROM, POS, cM, REF, ALT, AD, DP, GT`; a hand-built `df_allele` missing `cM`/`REF`/`ALT` is rejected before any computation runs |
+| ngenes_chr | SCEVAN | 5 | Minimum genes per chromosome per cell, same role as copyKAT's `ngene.chr` |
 | resolution (~5 Mb) | all expression methods | ~5 Mb | The floor of expression-based CNV; focal events below this are invisible |
 
 ## Common Errors
@@ -187,6 +221,8 @@ malignant <- cnv_score > quantile(cnv_score, 0.5)
 | Subclones from inferCNV/copyKAT do not replicate | Expression-only subclone calls are weak hypotheses | Confirm with Numbat allele evidence or DNA; report subclones as hypotheses |
 | CNV signal vanishes after integrating samples | Cross-patient integration erased patient-private karyotypes | Run CNV inference per sample BEFORE any cross-patient integration |
 | Genes silently dropped / wrong chromosome bands | Gene-order file or genome build mismatched to the counts | Match `gene_order_file` and `genome` to the same assembly and gene IDs as the matrix |
+| SCEVAN `pipelineCNA()` errors after printing "found N tumor cells" | Its own internal plotting step (no `plot=FALSE` switch) fails on a sparse or small cohort, after classification already completed | Wrap the call in `tryCatch()`; treat the printed tumor-cell count as the result even if the return value is lost to the plotting error |
+| SCEVAN "all cells are filtered" at step 5 | Gene panel doesn't span enough of the 22 autosomes SCEVAN checks per cell (`ngenes_chr` genes on each) | Use a genome-wide (or broadly multi-chromosome) panel, not a handful of loci; this is an algorithmic requirement, not tunable away with `ngenes_chr` alone |
 
 ## Related Skills
 

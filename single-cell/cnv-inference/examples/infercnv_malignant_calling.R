@@ -33,7 +33,12 @@ infercnv_obj <- infercnv::run(
 # copy-neutral, then threshold (or rerun with analysis_mode = 'subclusters' to split
 # observation cells on CNV signal). add_to_seurat writes the CNA metadata onto a
 # Seurat object for plotting.
-obs <- read.table('infercnv_out/infercnv.observations.txt', header = TRUE, row.names = 1)
+# Under inferCNV 1.22's default HMM/subclusters mode, the plain-text
+# infercnv.observations.txt file is no longer written -- load the object instead
+# (checked on inferCNV 1.22.0).
+infercnv_obj_final <- readRDS('infercnv_out/run.final.infercnv_obj')
+obs_idx <- unlist(infercnv_obj_final@observation_grouped_cell_indices)
+obs <- infercnv_obj_final@expr.data[, obs_idx]
 cnv_score <- colSums((obs - 1)^2)
 malignant <- cnv_score > quantile(cnv_score, 0.5)
 
