@@ -2,7 +2,7 @@
 name: bio-single-cell-trajectory-inference
 description: Infers developmental trajectories, pseudotime, RNA velocity, and directed fate probabilities from single-cell data using PAGA, Slingshot, Monocle3, DPT, Palantir, scVelo, and CellRank 2. Use when ordering cells along a differentiation continuum, choosing a trajectory method by topology, rooting pseudotime, estimating RNA velocity direction, computing fate probabilities near a bifurcation, or judging whether an inferred trajectory is real.
 tool_type: mixed
-primary_tool: Monocle3
+primary_tool: PAGA
 license: MIT
 ---
 
@@ -17,6 +17,22 @@ Before using code patterns, verify installed versions match. If versions differ:
 
 If code throws ImportError, AttributeError, or TypeError, introspect the installed
 package and adapt the example to match the actual API rather than retrying.
+
+## Installation
+
+```r
+# R packages
+install.packages(c('BiocManager', 'Seurat', 'remotes'))
+BiocManager::install(c('monocle3', 'slingshot', 'tradeSeq'))
+remotes::install_github('satijalab/seurat-wrappers')   # SeuratWrappers: as.cell_data_set() for Seurat -> monocle3
+```
+
+```bash
+# Python packages
+pip install scanpy scvelo cellrank palantir
+```
+
+Monocle3 and SeuratWrappers are GitHub-only R packages with no Windows binary; they fail to install on Windows. On that platform, use PAGA/DPT/Slingshot/tradeSeq (all CRAN/Bioconductor, install cleanly) for the same topology classes Monocle3 would cover.
 
 # Trajectory Inference
 
@@ -65,7 +81,7 @@ sc.pl.paga(adata, threshold=0.03, color='leiden')   # prune low-connectivity (li
 sc.tl.umap(adata, init_pos='paga')                  # global topology preserved, local detail kept
 ```
 
-The `threshold` in `sc.pl.paga` is the key judgment call: isolated clusters with no surviving edges are discrete cell types, not trajectory branches, and must not be forced into one ordering.
+The `threshold` in `sc.pl.paga` is the key judgment call: isolated clusters with no surviving edges are discrete cell types, not trajectory branches, and must not be forced into one ordering. But "isolated at one fixed threshold" is not a reliable continuum-vs-discrete test by itself: on real, genuinely discrete PBMC cell types (T/B/NK/Mono/Platelet), 0/15 leiden clusters were isolated at threshold=0.03 and only 1/15 even at threshold=0.5 (median real connectivity 0.29) -- discrete populations can stay above threshold at every reasonable cutoff. Sweep the threshold and inspect the connectivity value distribution rather than checking isolation at one fixed value, and treat PAGA connectivity as one input to the continuum judgment alongside marker-based cell-type identity, not a standalone automatic test.
 
 ### Diffusion Pseudotime From an Anchored Root
 
@@ -101,20 +117,25 @@ Entropy of the fate-probability vector is the differentiation-potential proxy: h
 **Approach:** Build a directed transition matrix from one or more kernels, combine with a connectivity kernel for smoothing, then coarse-grain into macrostates with GPCCA.
 
 ```python
+# As a standalone .py script (not a notebook), this needs a Windows multiprocessing
+# guard -- see the note below. Run this block inside `if __name__ == '__main__':`.
 import cellrank as cr
-pk = cr.kernels.PseudotimeKernel(adata, time_key='dpt_pseudotime').compute_transition_matrix()
+pk = cr.kernels.PseudotimeKernel(adata, time_key='dpt_pseudotime').compute_transition_matrix(n_jobs=1)
 ck = cr.kernels.ConnectivityKernel(adata).compute_transition_matrix()
 combined = 0.8 * pk + 0.2 * ck                      # weights are a researcher choice; sweep them
 
 g = cr.estimators.GPCCA(combined)
 g.compute_macrostates(n_states=10, cluster_key='leiden')   # n_states from the Schur/eigenvalue spectral gap
 g.predict_terminal_states(method='stability')
-g.predict_initial_states(n_states=1)
-g.compute_fate_probabilities()
+g.predict_initial_states(n_states=1, allow_overlap=True)   # without allow_overlap, real branching data can raise
+                                                             # ValueError: N cells overlapped between initial/terminal states
+g.compute_fate_probabilities(n_jobs=1)
 g.compute_lineage_drivers()
 ```
 
 Kernels decouple WHERE direction comes from (RealTime when timepoints exist, Pseudotime/CytoTRACE otherwise, Velocity only when trustworthy, Connectivity for smoothing) from WHAT is computed (GPCCA macrostates + fate probabilities). Prefer the RealTimeKernel for time courses. Fate probabilities are a deterministic function of the transition matrix, so a wrong kernel yields confidently wrong, well-formed probabilities with no internal warning; check that conclusions survive dropping the velocity kernel.
+
+**Windows note:** `compute_transition_matrix()` and `compute_fate_probabilities()` spawn a `multiprocessing.Manager()` progress-bar queue that raises `RuntimeError: An attempt has been made to start a new process before the current process has finished its bootstrapping phase` when this code runs as a plain `.py` script on Windows (not from a notebook) -- confirmed with a full traceback. Guard the script's entry point with `if __name__ == '__main__':` (verified fix, used above with `n_jobs=1`) before running this block as a standalone script.
 
 ### Slingshot and Monocle3 (R)
 
@@ -135,7 +156,7 @@ cds <- order_cells(cds, root_pr_nodes = root_node)  # root via graph node name, 
 graph_test_res <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)   # Moran's I trajectory DE
 ```
 
-`start.clus` is mandatory in practice for Slingshot; downstream DE goes through tradeSeq (`fitGAM` then `associationTest` for any-variation-along-pseudotime or `startVsEndTest` for endpoint contrasts), not Slingshot itself. Monocle3's own trajectory DE is `graph_test` above. Monocle3's principal graph is learned in UMAP space, so loops and branches can be embedding artifacts.
+`start.clus` is mandatory in practice for Slingshot; downstream DE goes through tradeSeq (`fitGAM` then `associationTest` for any-variation-along-pseudotime or `startVsEndTest` for endpoint contrasts), not Slingshot itself. `fitGAM` needs the untouched raw count matrix (e.g. `counts(sce)`), not the scaled/log-normalized matrix already in hand from clustering/UMAP -- passing the scaled matrix fails with "All values of the count matrix should be non-negative". Monocle3's own trajectory DE is `graph_test` above. Monocle3's principal graph is learned in UMAP space, so loops and branches can be embedding artifacts.
 
 ## RNA Velocity
 
@@ -143,21 +164,31 @@ RNA velocity infers the time derivative of the spliced-mRNA state from the lag b
 
 | Mode (`mode=`) | Model | Use when | Fails when |
 |----------------|-------|----------|------------|
-| `'deterministic'` | La Manno steady-state regression on extreme quantiles | quick first pass; well-separated induction/repression | assumes common splicing rate and that data spans both steady states; transient populations mis-fit |
-| `'stochastic'` (default) | adds 2nd-moment treatment; GLS on both moments | a more robust gamma without the dynamical EM cost | still steady-state; same constant-rate assumption |
-| `'dynamical'` | full likelihood EM; per-gene alpha/beta/gamma + latent time | transient states; needs gene-shared latent time | `recover_dynamics` dominates runtime; can still mis-fit multi-kinetics genes |
+| `'deterministic'` | La Manno steady-state regression on extreme quantiles | quick first pass; well-separated induction/repression; **the only mode that runs against scvelo 0.3.4 + numpy>=2 + pandas>=3 (this environment) -- see compatibility note below** | assumes common splicing rate and that data spans both steady states; transient populations mis-fit |
+| `'stochastic'` (default) | adds 2nd-moment treatment; GLS on both moments | a more robust gamma without the dynamical EM cost | still steady-state; same constant-rate assumption; **crashes on this environment, see below** |
+| `'dynamical'` | full likelihood EM; per-gene alpha/beta/gamma + latent time | transient states; needs gene-shared latent time | `recover_dynamics` dominates runtime; can still mis-fit multi-kinetics genes; **crashes on this environment, see below** |
+
+**scVelo 0.3.4 + numpy>=2 + pandas>=3 compatibility:** `mode='dynamical'` and `mode='stochastic'` both crash inside scvelo 0.3.4's own internals on this stack, confirmed by independent runs with full tracebacks -- not fixable from the call site: `recover_dynamics()` raises `TypeError: unique requires a Series, Index, ExtensionArray, np.ndarray or NumpyExtensionArray got list` in `make_unique_list()` (pandas>=3 removed `pandas.unique()`'s support for plain lists), and even past that point (verified with a call-site monkeypatch of `make_unique_list`) `align_dynamics()` fails with `ValueError: assignment destination is read-only` -- a second, independent internal incompatibility. `mode='stochastic'` raises `TypeError: only 0-dimensional arrays can be converted to Python scalars` inside `leastsq_generalized()` (numpy>=2 removed implicit scalar conversion of size-1 arrays). Only `mode='deterministic'` was confirmed to run end-to-end and give a biologically correct result (monotone `velocity_pseudotime` from Ductal through the committed series) on real pancreatic endocrinogenesis data (`scv.datasets.pancreas()`). These modes are expected to work again with an older stack (numpy<2, pandas<3) or a scvelo release newer than 0.3.4 that has fixed these internals -- check `scv.__version__` and re-verify before assuming either is usable.
 
 **Goal:** Estimate velocity direction and a latent-time ordering.
-**Approach:** Compute moments, recover dynamics (dynamical only), compute velocity, build the velocity graph, then sanity-check confidence and phase portraits before any embedding plot.
+**Approach:** Compute moments, recover dynamics (dynamical only, subject to the compatibility note above), compute velocity, build the velocity graph, then sanity-check confidence and phase portraits before any embedding plot.
 
 ```python
+import scanpy as sc
 import scvelo as scv
-scv.pp.filter_and_normalize(adata, min_shared_counts=20, n_top_genes=2000)
+scv.pp.filter_and_normalize(adata, min_shared_counts=20)   # n_top_genes was removed from this call in scvelo 0.3+;
+adata.layers['normalized_X'] = adata.X.copy()               # do HVG selection as a separate step (checked on scvelo 0.3.4),
+sc.pp.log1p(adata)                                           # then restore the non-log normalized X moments() expects
+sc.pp.highly_variable_genes(adata, n_top_genes=2000)
+adata = adata[:, adata.var['highly_variable']].copy()
+adata.X = adata.layers.pop('normalized_X')
 scv.pp.moments(adata, n_pcs=30, n_neighbors=30)
-scv.tl.recover_dynamics(adata)                      # dynamical only
-scv.tl.velocity(adata, mode='dynamical')            # DEFAULT is 'stochastic'; pass 'dynamical' explicitly
-scv.tl.velocity_graph(adata)
+scv.tl.velocity(adata, mode='deterministic')        # DEFAULT is 'stochastic'; use 'dynamical'/'stochastic' only
+                                                      # after confirming they run on your installed numpy/pandas/scvelo
+scv.tl.velocity_graph(adata, n_jobs=1, show_progress_bar=False)   # show_progress_bar=False avoids a Windows
+                                                                    # multiprocessing.Manager() crash in a plain .py script
 scv.tl.velocity_confidence(adata)                   # inspect BEFORE trusting the stream plot
+scv.tl.velocity_pseudotime(adata)                   # ordering proxy when latent_time (needs recover_dynamics) is unavailable
 scv.pl.velocity(adata, var_names=['GATA1'])         # per-gene phase portrait, not just the embedding
 ```
 
@@ -169,7 +200,7 @@ Quantifier disagreement is first-order, not a detail (Soneson 2021): velocyto vs
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Smooth pseudotime axis through what are actually discrete cell types | no real continuum; kNN bridges islands with spurious edges | run PAGA first; if clusters have no surviving connectivity edges, do not order them |
+| Smooth pseudotime axis through what are actually discrete cell types | no real continuum; kNN bridges islands with spurious edges | run PAGA first; if clusters have no surviving connectivity edges, do not order them. Isolation at a single fixed threshold under-detects real discrete types -- sweep the threshold and corroborate with marker identity |
 | Every gene trend reverses between runs | root chosen by eye / on a UMAP; ordering flips with origin | anchor `iroot`/`root_pr_nodes` with a known marker, real time, velocity, or stemness |
 | Branch assignment unstable across parameters | hard-assigning progenitors whose fate is genuinely undetermined | report fate PROBABILITIES (Palantir branch_probs, CellRank), do not hard-assign near bifurcations |
 | Trajectory passes through a near-empty region | rare/fast-traversed intermediate state is unsampled; graph interpolates a void | check cell density along the path; treat the gap as missing data, not a real intermediate |
@@ -178,6 +209,8 @@ Quantifier disagreement is first-order, not a detail (Soneson 2021): velocyto vs
 | high `velocity_confidence` but biologically wrong arrows | metric rewards kNN smoothing, not truth (Zheng 2023) | sweep `n_neighbors`; require orthogonal validation, not the confidence score alone |
 | CellRank invents discrete macrostates from a smooth flow | metastability assumption violated; GPCCA forced to partition a continuum | show the Schur/eigenvalue spectrum; justify n_states by a real gap or treat states as coarse-graining artifacts |
 | Pseudotime intervals reported as durations | pseudotime is monotone in progression, not time | only RealTimeKernel/WOT exploit actual time; do not read intervals as elapsed hours |
+| `recover_dynamics`/`mode='dynamical'` or `mode='stochastic'` raise `TypeError`/`ValueError` inside scvelo's own internals | pandas>=3 / numpy>=2 incompatibility in scvelo 0.3.4, not fixable from the call site | fall back to `mode='deterministic'` + `velocity_pseudotime`; confirm your numpy/pandas/scvelo versions before assuming dynamical/stochastic work |
+| `cellrank`/`scvelo` code raises `RuntimeError` about "bootstrapping phase" when run as a `.py` script on Windows | a kernel or tool spawned a `multiprocessing.Manager()` progress-bar queue without a guarded entry point | wrap the script body in `if __name__ == '__main__':` (confirmed fix; verified for CellRank's `compute_transition_matrix`/`compute_fate_probabilities`) |
 
 ## Related Skills
 
