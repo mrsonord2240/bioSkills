@@ -10,6 +10,12 @@ def prepare_mol_3d(smiles, n_conf=20, seed=42):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
+    if len(Chem.GetMolFrags(mol)) > 1:
+        raise ValueError(
+            f'Disconnected fragments (salt/multi-component) in {smiles!r}; '
+            'MMFF validation trivially passes for unbonded fragments and produces '
+            'meaningless conformers -- salt-strip before shape comparison.'
+        )
     mol = Chem.AddHs(mol)
     params = AllChem.ETKDGv3()
     params.randomSeed = seed

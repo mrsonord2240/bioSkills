@@ -8,7 +8,7 @@ license: MIT
 
 ## Version Compatibility
 
-Reference examples tested with: RDKit 2024.09+ (Open3DAlign and USRCAT); official ShaEP syntax checked against ShaEP 1.4.2; ROCS/FastROCS/ROCS X are commercial OpenEye products.
+Reference examples tested with: RDKit 2024.09+ (Open3DAlign and USRCAT); official ShaEP syntax checked against ShaEP 1.4.2; ESPSim example checked against espsim 0.0.1; ROCS/FastROCS/ROCS X are commercial OpenEye products.
 
 Before using code patterns, verify installed versions match. If versions differ:
 - Python: `pip show <package>` then `help(module.function)` to check signatures
@@ -120,44 +120,92 @@ For each library molecule, generate ensemble of conformers; pick best-shape conf
 
 **Goal:** Run shape-similarity search over a conformer ensemble per library molecule so bound-conformer-like shapes are recovered.
 
-**Approach:** For each library molecule, add hydrogens, embed n_conf conformers with ETKDGv3, MMFF-optimize, score each conformer against the query with Open3DAlign, and keep the best score per molecule.
+**Approach:** For each library molecule, reject disconnected fragments (salts have no single shape to compare), add hydrogens, embed n_conf conformers with ETKDGv3, MMFF-optimize, drop only the conformers that fail to converge (not the whole molecule), score the surviving conformers against the query with Open3DAlign, and keep the best score per molecule. Report every molecule that is dropped and why -- do not let a molecule silently disappear from the results.
 
 ```python
 def shape_search_ensemble(query_mol, library_mols, n_conf=20):
     hits = []
+    dropped = []  # (smiles, reason) for every molecule that produced no usable score
     for target in library_mols:
+        smi = Chem.MolToSmiles(target)
+        if len(Chem.GetMolFrags(target)) > 1:
+            dropped.append((smi, 'disconnected fragments (salt/multi-component); '
+                                  'no single shape to compare'))
+            continue
+
         target = Chem.AddHs(target)
         ids = list(AllChem.EmbedMultipleConfs(target, numConfs=n_conf,
                                                params=AllChem.ETKDGv3()))
         if not ids:
+            dropped.append((smi, 'embedding failed for all requested conformers'))
             continue
         if not AllChem.MMFFHasAllMoleculeParams(target):
+            dropped.append((smi, 'MMFF parameters unavailable'))
             continue
+
         optimization = AllChem.MMFFOptimizeMoleculeConfs(target)
-        if any(status != 0 for status, _ in optimization):
+        # Keep only the conformer ids that converged (status == 0); a molecule with
+        # 19 good conformers and 1 non-convergent one must not be discarded outright.
+        converged_ids = [cid for cid, (status, _) in zip(ids, optimization) if status == 0]
+        n_failed = len(ids) - len(converged_ids)
+        if n_failed:
+            print(f'WARNING: {smi}: {n_failed}/{len(ids)} conformers failed MMFF '
+                  f'convergence; scoring the remaining {len(converged_ids)}')
+        if not converged_ids:
+            dropped.append((smi, f'all {len(ids)} conformers failed MMFF convergence'))
             continue
 
         scores = []
-        for c in range(target.GetNumConformers()):
+        for c in converged_ids:
             O3A = rdMolAlign.GetO3A(target, query_mol, prbCid=c)
             O3A.Align()
             scores.append(1.0 - rdShapeHelpers.ShapeTanimotoDist(
                 target, query_mol, confId1=c,
             ))
-        if scores:
-            hits.append((target, max(scores)))
+        hits.append((target, max(scores)))
+
+    if dropped:
+        print(f'WARNING: {len(dropped)} library molecule(s) produced no usable '
+              f'conformer and were dropped:')
+        for smi, reason in dropped:
+            print(f'  {smi}: {reason}')
     return sorted(hits, key=lambda x: x[1], reverse=True)
 ```
 
-**Critical:** Results depend on conformer coverage. Use an ensemble sized and validated for the library and query rather than assuming one conformer is representative.
+**Critical:** Results depend on conformer coverage. Use an ensemble sized and validated for the library and query rather than assuming one conformer is representative. A molecule that loses some but not all of its conformers to non-convergence is still scored on the survivors; only a molecule with zero usable conformers is dropped, and every drop is printed with its SMILES and reason -- never assume "fewer hits than input molecules" means the missing ones failed cleanly.
 
 ## ESP Similarity (Electrostatic)
 
 ShaEP and ESPSim extend shape with electrostatic surface potential overlap. For ESP-relevant pharmacophores (binding pockets with strong electrostatics):
 
+### ShaEP (external binary, field-based)
+
+RDKit has no Mol2 writer, so build the `.mol2` inputs ShaEP requires with Open Babel first (see `chemoinformatics/molecular-io` for other conversions):
+
 ```bash
+obabel -:"CC(=O)Nc1ccc(C(=O)c2ccccc2)cc1" -O query.mol2 --gen3D
+obabel -:"CC(=O)Nc1ccc(C(=O)c2ccc(F)cc2)cc1" -O target.mol2 --gen3D
 shaep -q query.mol2 target.mol2 -s aligned_hits.sdf similarity.txt
 ```
+
+`similarity.txt` reports `shape_similarity`, `ESP_similarity`, and their average per target -- checked on ShaEP 1.4.2.
+
+### ESPSim (RDKit-native, Python)
+
+ESPSim (`pip install espsim`) embeds, aligns, and scores shape and ESP similarity without leaving RDKit:
+
+```python
+from rdkit import Chem
+from espsim import EmbedAlignScore
+
+query = Chem.AddHs(Chem.MolFromSmiles('CC(=O)Nc1ccc(C(=O)c2ccccc2)cc1'))
+target = Chem.AddHs(Chem.MolFromSmiles('CC(=O)Nc1ccc(C(=O)c2ccc(F)cc2)cc1'))
+
+# prbNumConfs/refNumConfs: conformers generated internally for alignment search
+shape_sim, esp_sim = EmbedAlignScore(target, [query], prbNumConfs=10, refNumConfs=10)
+```
+
+`shape_sim` is a shape Tanimoto in [0, 1]. `esp_sim` uses the default `metric='carbo'` (Carbo similarity index) and is **not** bounded to [0, 1] -- it can go negative for anti-correlated electrostatic potentials. Pass `renormalize=True` to rescale it to [0, 1] if a bounded score is needed. Default partial charges are RDKit Gasteiger; pass `prbCharge`/`refCharge` for higher-accuracy charges (e.g. from a QM calculation).
 
 ESP scoring catches electrostatic-equivalent bioisosteres that pure shape misses (carboxylate vs tetrazole same charge).
 
@@ -194,6 +242,16 @@ def scaffold_hop_candidates(query_mol, library, shape_threshold=0.7,
 ```
 
 ## Per-Tool Failure Modes
+
+### Disconnected-fragment (salt) input -- silent success on meaningless shapes
+
+**Trigger:** Library SMILES with more than one component, e.g. a salt (`[Fe+2].[Cl-].[Cl-]`) or a counter-ion-carrying export.
+
+**Mechanism:** `AllChem.MMFFHasAllMoleculeParams(mol)` returns `True` for disconnected fragments -- unbonded single-atom pieces have nothing for MMFF to fail to parameterize -- so embedding and MMFF optimization both "succeed" and produce conformers with no real combined shape to compare.
+
+**Symptom:** No exception anywhere; the molecule gets a shape score as if it were a normal structure.
+
+**Fix:** Check `len(Chem.GetMolFrags(mol)) > 1` before embedding and reject or warn on multi-fragment input; `shape_search_ensemble` above does this. Salt-strip upstream (see `chemoinformatics/molecular-standardization`) if the intent is to compare the parent structure's shape.
 
 ### USRCAT -- false positive on small molecules
 
