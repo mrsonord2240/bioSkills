@@ -8,11 +8,16 @@ DELAY = 0.34
 
 
 def discover_links(dbfrom, source_id):
-    '''Return (LinkName, DbTo, MenuTag) tuples for the (dbfrom, source-id) pair.'''
+    '''Return (LinkName, DbTo, MenuTag) tuples for the (dbfrom, source-id) pair.
+
+    LinkInfo entries are keyed 'LinkName' (not 'Name') on current Biopython/NCBI,
+    and some entries (e.g. nuccore_nuccore_mrnaonly, pubmed_pmc_local) omit
+    MenuTag/HtmlTag entirely -- both must be guarded, not indexed directly.
+    '''
     h = Entrez.elink(dbfrom=dbfrom, id=source_id, cmd='acheck')
     r = Entrez.read(h); h.close()
     info = r[0]['IdCheckList']['IdLinkSet'][0]['LinkInfo']
-    return [(i['Name'], i['DbTo'], i['MenuTag']) for i in info]
+    return [(i['LinkName'], i['DbTo'], i.get('MenuTag', '<none>')) for i in info]
 
 
 print('=== Gene 672 (BRCA1): all available link tables ===')

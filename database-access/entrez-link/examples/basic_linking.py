@@ -29,19 +29,19 @@ print(f'gene_protein (all):   {len(all_proteins):>5} proteins (incl. predictions
 print(f'Ratio: {len(all_proteins) / max(len(refseq), 1):.1f}x')
 time.sleep(DELAY)
 
-print('\n=== Asymmetric round-trip warning: PubMed <-> Gene ===')
-pmid = '35412348'
-genes_via_textmine = linked_ids('pubmed', 'gene', pmid, linkname='pubmed_gene')
+print('\n=== Asymmetric/curation-level warning: Gene -> PubMed ===')
+# Note: an earlier version of this demo used PMID 35412348's pubmed_gene/pubmed_gene_rif
+# links, but that PMID currently has zero links in either linkname (live NCBI, confirmed
+# via cmd='acheck' -- no pubmed_gene* linkname is even offered for it). TP53's own
+# gene_pubmed_rif vs gene_pubmed links reliably demonstrate the same curated-vs-all
+# disparity on live data.
+GENE_TP53 = '7157'
+genes_via_rif = linked_ids('gene', 'pubmed', GENE_TP53, linkname='gene_pubmed_rif')
 time.sleep(DELAY)
-genes_via_rif = linked_ids('pubmed', 'gene', pmid, linkname='pubmed_gene_rif')
-time.sleep(DELAY)
-print(f'pubmed_gene (text-mined + curated): {len(genes_via_textmine)} genes')
-print(f'pubmed_gene_rif (curated only):     {len(genes_via_rif)} genes')
-
-if genes_via_rif:
-    pmid_via_curated = linked_ids('gene', 'pubmed', genes_via_rif[0], linkname='gene_pubmed_rif')
-    print(f'Round-trip via curated linknames: gene {genes_via_rif[0]} -> {len(pmid_via_curated)} PubMed records')
-    print(f'Original PMID {pmid} in round-trip set: {pmid in pmid_via_curated}')
+genes_via_all = linked_ids('gene', 'pubmed', GENE_TP53, linkname='gene_pubmed')
+print(f'gene_pubmed_rif (curated only):      {len(genes_via_rif)} PubMed records')
+print(f'gene_pubmed (text-mined + curated):  {len(genes_via_all)} PubMed records')
+print(f'RIF set is a subset of the all set: {set(genes_via_rif).issubset(set(genes_via_all))}')
 time.sleep(DELAY)
 
 print('\n=== neighbor_score: relevance scores for related papers ===')
