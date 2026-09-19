@@ -29,11 +29,25 @@ ELink is the navigation layer of Entrez. The decision that matters most is **whi
 
 ## Required Setup
 
+```bash
+pip install biopython
+```
+
 ```python
 from Bio import Entrez
 Entrez.email = 'researcher@institution.edu'
 Entrez.api_key = 'optional_api_key'  # raises rate to 10 req/sec
 ```
+
+## Workflow
+
+1. Set `Entrez.email` and `Entrez.api_key`.
+2. For unfamiliar (`dbfrom`, `db`) pairs, run `cmd='acheck'` first to enumerate linknames.
+3. Pick a `linkname` deliberately — prefer curated variants (`*_refseq`, `*_rif`, `*_swissprot`) for analyses; use the umbrella `gene_protein` only for exploration.
+4. For >200 source IDs, EPost first and ELink with `cmd='neighbor_history'`.
+5. Iterate the response as one LinkSet per input UID — never assume a single LinkSetDb covers all inputs.
+6. Guard for empty `LinkSetDb` before indexing.
+7. Document the asymmetry of round-trip queries when results matter for publication.
 
 ## The `linkname` decision (most important)
 
@@ -68,10 +82,10 @@ For most (`dbfrom`, `db`) pairs NCBI exposes multiple link tables. The qualifier
 h = Entrez.elink(dbfrom='gene', db='protein', id='672', cmd='acheck')
 record = Entrez.read(h); h.close()
 for ls in record[0]['IdCheckList']['IdLinkSet'][0]['LinkInfo']:
-    print(f'{ls["Name"]}  -> {ls["DbTo"]} | {ls["MenuTag"]} ({ls["HtmlTag"]})')
+    print(f'{ls["LinkName"]}  -> {ls["DbTo"]} | {ls.get("MenuTag", "<none>")} ({ls.get("HtmlTag", "<none>")})')
 ```
 
-`cmd='acheck'` is the only authoritative way to enumerate available linknames — they change with each NCBI release.
+`cmd='acheck'` is the only authoritative way to enumerate available linknames — they change with each NCBI release. LinkInfo entries are keyed `LinkName` (not `Name`) on current Biopython/NCBI, and some entries omit `MenuTag`/`HtmlTag` entirely (e.g. `nuccore_nuccore_mrnaonly`, `pubmed_pmc_local`) — always access both with `.get(..., '<none>')`, never index directly.
 
 ## Decision table: which `cmd` for which goal
 
@@ -97,6 +111,10 @@ ELink relationships are **not guaranteed symmetric**. `pubmed_gene` and `gene_pu
 
 If round-trip consistency matters (e.g. "every gene mentioned in this paper, then every paper mentioning each gene"), expect the round-trip set to be larger than the input — and never assume `A -> B -> A` returns the original ID alone.
 
+## Clinically-actionable link tables
+
+`gene_clinvar`, `gene_omim`, `gene_gtr`, and `gene_medgen_diseases` return real, curated clinical-variant and disease data — not a toy example (e.g. `gene_clinvar` on BRCA1 alone returns 16,000+ linked ClinVar records). When one of these link types is surfaced in response to a request framed around a specific patient or personal diagnosis, do not make a diagnostic or prescriptive claim from the link count or record set — include a clinician/genetic-counselor referral instead. This applies regardless of general safety training: the caveat is part of correct output for these linknames specifically.
+
 ## Per-database link catalog (curated subset)
 
 ### gene
@@ -106,7 +124,7 @@ If round-trip consistency matters (e.g. "every gene mentioned in this paper, the
 | protein | `gene_protein`, `gene_protein_refseq`, `gene_protein_swissprot` | RefSeq is the safe default |
 | nuccore | `gene_nuccore`, `gene_nuccore_refseqrna`, `gene_nuccore_refseqgene` | `refseqrna` for mRNA, `refseqgene` for the curated gene region |
 | pubmed | `gene_pubmed`, `gene_pubmed_rif` | RIF is curated and high-quality |
-| homologene | `gene_homologene` | Deprecated 2014 but data still queryable |
+| homologene | `gene_homologene` | Deprecated 2014, data still queryable but new entries stopped -- prefer Ensembl Compara or OrthoFinder for current orthology |
 | snp | `gene_snp` | dbSNP entries in gene region |
 | clinvar | `gene_clinvar` | Clinical variants |
 | omim | `gene_omim` | Disease associations |
@@ -234,7 +252,7 @@ def list_link_names(dbfrom, id):
     h = Entrez.elink(dbfrom=dbfrom, id=id, cmd='acheck')
     r = Entrez.read(h); h.close()
     info = r[0]['IdCheckList']['IdLinkSet'][0]['LinkInfo']
-    return [(i['Name'], i['DbTo'], i['MenuTag']) for i in info]
+    return [(i['LinkName'], i['DbTo'], i.get('MenuTag', '<none>')) for i in info]
 
 for name, target, label in list_link_names('gene', '672'):
     print(f'{name:<40} -> {target:<15} ({label})')
@@ -270,6 +288,8 @@ def related_pubmed(pmid, top=10):
         return []
     return [(l['Id'], int(l['Score'])) for l in r[0]['LinkSetDb'][0]['Link'][:top]]
 ```
+
+`Score` is a large raw integer (NCBI's internal relevance magnitude, often in the tens of millions, e.g. `29748057`), not a normalized 0-100 value — never present it as a percentage or small rank.
 
 ### BioProject -> SRA runs
 
@@ -351,3 +371,4 @@ def bioproject_to_sra(prjna):
 - batch-downloads - History-server retrieval after ELink with `neighbor_history`
 - geo-data - Specialized gds <-> pubmed/bioproject links (gds->sra ELink unreliable; use pysradb)
 - ncbi-datasets-cli - Modern alternative for gene/genome cross-reference queries
+- local-blast / remote-homology - ELink returns asserted database relationships, not a similarity hit; for actual sequence/structure similarity, use these instead
