@@ -47,7 +47,7 @@ Tell your AI agent what you want to do:
 1. Confirm the hashing chemistry (antibody HTO, MULTI-seq lipid, CellPlex CMO) and that the HTO matrix barcodes match the GEX cells
 2. Normalize the HTO counts with CLR, choosing the margin deliberately (margin=2 corrects per-tag capture bias)
 3. Pick a caller from the decision table: HTODemux/MULTIseqDemux for clean data, hashsolo for few hashes, demuxEM/demuxmix when staining is marginal or ambient is high
-4. Classify cells into singlet (with sample), cross-sample doublet, and Negative
+4. Classify cells into singlet (with sample), cross-sample doublet, and Negative; if the Negative fraction is roughly 50%+ (or ~100%, see SKILL.md's hashsolo section), stop and diagnose parameters/staining before proceeding rather than reporting the result as-is
 5. Reconcile the cross-sample doublet rate against the expected loading doublet rate to sanity-check thresholds
 6. Recommend expression-based doublet detection in addition to catch within-sample doublets hashing cannot see
 7. Subset to confident singlets and pass them downstream for integration and clustering
@@ -64,6 +64,7 @@ Tell your AI agent what you want to do:
 - **Low Negatives can still mean failed staining** - if one tag captures nearly all cells the assignment is meaningless; check the per-tag singlet distribution against the expected pooling.
 - **Check every tag has positives** - a single near-zero tag means a failed antibody silently dropped or misassigned that sample even when global QC looks fine.
 - **Unequal pooling destabilizes minority tags** - inspect per-tag ridge plots and consider demuxmix for a rare sample; 3+ tags high signals over-loading or ambient, not ordinary doublets.
+- **hashsolo with 2-3 hashtags needs `number_of_noise_barcodes` set explicitly** - its default silently classifies every cell Negative; see SKILL.md's hashsolo section.
 
 ## Related Skills
 
