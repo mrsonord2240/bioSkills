@@ -17,13 +17,10 @@ Three classifier families are covered: DADA2 `assignTaxonomy` + `addSpecies` (RD
 # conda env create -n qiime2-amplicon-2024.10 --file <release env file>
 ```
 
-Conceptual prerequisites:
-- Inputs are per-feature SEQUENCES (a DADA2 `seqtab_nochim`, or a QIIME2 `FeatureData[Sequence]` of representative sequences) - ASV inference happens upstream in amplicon-processing.
-- The reference database is matched to the marker: 16S -> SILVA / GTDB / Greengenes2; ITS -> UNITE; 18S -> PR2 or SILVA. GTDB has no Eukarya and cannot classify ITS/18S.
-- The reference should be trimmed to the SAME primer region as the reads. A full-length classifier on V4 reads fabricates and erases calls.
-- Reference database downloads are large (a full-length SILVA NB classifier is multi-GB).
-- A pre-trained naive-Bayes `.qza` is a pickled scikit-learn model tied to the QIIME2 release that built it; a mismatched release errors out.
-- Pick ONE database+release for all samples in a study; never merge labels across SILVA/GTDB/Greengenes2.
+Conceptual prerequisites: inputs are per-feature sequences (a DADA2 `seqtab_nochim` or a QIIME2
+`FeatureData[Sequence]`) - ASV inference happens upstream in amplicon-processing. See SKILL.md's
+"Single Most Important Modern Insight" and Version Compatibility sections for what governs a
+correct classification (database/region matching, release pinning).
 
 ## Quick Start
 
@@ -57,48 +54,6 @@ Tell your AI agent what you want to do:
 
 ### Filtering host organelle reads
 > "My samples are plant-associated and a big fraction of ASVs are labelled Chloroplast or Mitochondria. Filter the host organelle features out of the feature table after assignment, before diversity and differential abundance, and tell me what fraction of reads that removed."
-
-## What the Agent Will Do
-
-1. Confirm the marker (16S/ITS/18S) and primer region, and load the per-feature sequences.
-2. Select a reference database matched to the marker, and state its release.
-3. Match the classifier reference to the primer region (use a region-matched pre-trained classifier or run extract-reads -> fit-classifier-naive-bayes).
-4. Choose a classifier (naive Bayes, vsearch-consensus, or IDTAXA) appropriate to the goal, and state the confidence threshold.
-5. Classify, leaving ranks unassigned (NA) below the confidence floor rather than forcing a label.
-6. Attempt species ONLY by exact match (addSpecies) for 16S, or accept species for ITS.
-7. Filter host organelle (Mitochondria, Chloroplast) and domain-unassigned/off-target features out of the table before any diversity or DA step (unless chloroplast is the study target in a phototroph community).
-8. Report the rank the data supports and the three conditioning choices (classifier, database+release, region); hand the labelled, filtered table to diversity-analysis / differential-abundance.
-
-## Tips
-
-- Report the rank the data supports. For 16S, that is genus at best for many taxa, family for poorly resolved clades - not species. The tool will emit a species name; that does not make it licensed.
-- A confidence of 0.95 means the model is sure GIVEN the taxon is in the database. It is not evidence the taxon is present. If the true organism is absent, the call is the nearest wrong relative.
-- Match the reference to the primer region. Pointing a full-length classifier at V4 reads is the single most common silent accuracy loss.
-- For a scikit-learn version error: retrain locally with fit-classifier-naive-bayes, download the classifier built for the exact QIIME2 release, or switch to classify-consensus-vsearch (no pickled model).
-- Keep `Unassigned`/truncated features and label them honestly (e.g. `g__; s__`); do not silently drop or force-fill them. `Unassigned` at domain level usually means off-target (host, chimera, primer artifact) - filter, but document it.
-- Never position-trim ITS to a fixed length - ITS is variable-length. Remove ITS primers, then classify.
-- Use one database+release for an entire study; SILVA, GTDB, and Greengenes2 disagree on names and ranks.
-- Filter host mitochondria and chloroplast features after assignment and before diversity/DA: universal 16S primers amplify host organelle rRNA, which otherwise inflates the table and deflates every real taxon by closure. Use `qiime taxa filter-table --p-exclude mitochondria,chloroplast` or the phyloseq subset_taxa equivalent (the rank-equality form is SILVA-138-specific). Exception: in phototroph/aquatic/mat communities, chloroplast 16S can be the signal - inspect before excluding.
-
-## Classification Methods
-
-| Method | Strength | Limitation |
-|--------|----------|------------|
-| Naive Bayes (classify-sklearn / assignTaxonomy) | fast (train once), well-benchmarked default | over-classifies if confidence left low; pre-trained model is sklearn-pinned |
-| Alignment-consensus (classify-consensus-vsearch) | no trained model, immune to sklearn pinning, transparent hits | slower; consensus thresholds are extra knobs |
-| IDTAXA (DECIPHER) | conservative, novelty-aware, refuses to over-descend | needs a pre-trained DECIPHER trainingSet |
-| addSpecies (DADA2, exact match) | high-precision species calls | exact-match only; low recall (most ASVs left NA) |
-
-## Reference Databases
-
-| Database | Marker / scope | Best for |
-|----------|----------------|----------|
-| SILVA 138.x | 16S + 18S; Bacteria, Archaea, Eukarya; curated rRNA taxonomy | general-purpose 16S/18S default |
-| GTDB r220 | 16S; Bacteria + Archaea only; genome-based, rank-normalized | environmental / under-named bacteria (names differ from SILVA) |
-| Greengenes2 | 16S (V4-focused) on a genome-backbone tree, GTDB-harmonized | unifying 16S with shotgun on one tree (closed-reference) |
-| UNITE | fungal ITS; species hypotheses | fungi; resolves to species |
-| PR2 5.x | protist/eukaryote 18S; curated | microeukaryote 18S |
-| RDP | 16S; legacy | historical reproducibility only |
 
 ## Related Skills
 

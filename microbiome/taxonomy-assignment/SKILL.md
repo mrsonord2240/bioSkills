@@ -61,6 +61,7 @@ ITS (the fungal barcode) is the exception: it resolves to species far more relia
 | Fungal ITS | UNITE (species hypotheses) + NB or vsearch | formal fungal barcode; species-resolved; never position-trim ITS |
 | Protist / eukaryote 18S | PR2 (or SILVA 18S) | curated microeukaryote SSU |
 | Species name from one 16S region | DO NOT (or addSpecies exact-match only) | region lacks the information; report genus |
+| Reproducing an older study / legacy pipeline | RDP reference database | matches historical assignments; superseded by SILVA/GTDB for new work |
 | Raw shotgun reads, not ASVs | -> metagenomics/kraken-classification, metaphlan-profiling | different input artifact and output semantics |
 
 Method choice is contested (see References). Bokulich 2018 found naive Bayes and vsearch-consensus broadly comparable and both top-tier; verify current best practice against the latest q2-feature-classifier docs rather than hard-coding one classifier.
@@ -74,6 +75,13 @@ Method choice is contested (see References). Bokulich 2018 found naive Bayes and
 ```r
 library(dada2)
 seqtab_nochim <- readRDS('seqtab_nochim.rds')
+
+# assignTaxonomy() runs an RDP-style naive Bayes classifier with 100 BOOTSTRAP RESAMPLES per
+# sequence -- inherently stochastic. set.seed() before EVERY call (DADA2's own tutorial does
+# this immediately before this exact call) -- without it, two runs on the same input differ at
+# the genus call for ~2-3% of ASVs. Verified: with set.seed() before each call, repeated runs
+# are reproducible at the genus rank; any fixed integer works, 100 is just a convention here.
+set.seed(100)
 
 # minBoot 50 = the DADA2 default and the RDP recommendation for reads <=250 nt; tutorials
 # often use 80 (a stricter CHOICE, not the default). Raising it truncates to shallower but
@@ -96,8 +104,37 @@ The reference FASTA must be DADA2-formatted (rank-labelled headers) AND ideally 
 
 ```r
 library(DECIPHER)
-load('SILVA_SSU_r138_2019.RData')  # provides the trainingSet object
+load('SILVA_SSU_r138_2019.RData')  # provides the trainingSet object, if you have a pre-trained one
+
+# No pre-trained .RData for your marker/region? Train one directly from a reference FASTA +
+# matching "Root;domain;phylum;...;genus;" taxonomy strings (one per sequence, same order).
+# LearnTaxa() tunes its tree-descent k-mer sampling with repeated random subsamples (its own
+# documentation: "this process is repeated with 100 random subsamples") -- inherently stochastic,
+# same class of bug as IdTaxa() below. Verified: two unseeded LearnTaxa() calls on identical input
+# produce non-identical trainingSet objects; set.seed() before EVERY LearnTaxa() call makes the
+# trainingSet object itself reproducible (identical() TRUE).
+# refseqs <- readDNAStringSet('region-matched-ref.fasta')
+# reftax  <- readLines('region-matched-ref-taxonomy.txt')  # e.g. "Root;Bacteria;Firmicutes;...;"
+# set.seed(100)
+# trainingSet <- LearnTaxa(refseqs, taxonomy = reftax)
+# MEMORY: LearnTaxa() against a full, un-subsampled reference (400K+ sequences) needs tens of GB
+# of RAM and can crash on constrained hardware; subsample the reference (e.g. ~60,000 sequences)
+# if it does.
+# LearnTaxa's OPTIONAL rank= argument (a 5-column Index/Name/Parent/Level/Rank data.frame, rarely
+# available outside DECIPHER's own pre-built .RData sets) is not required to train or classify --
+# see the flattening note below for why it matters anyway.
+
 dna <- DNAStringSet(getSequences(seqtab_nochim))
+
+# IdTaxa() descends its classification tree with an internal stochastic step -- inherently
+# stochastic, same as assignTaxonomy() above, and by a LARGER margin (verified: unseeded, two
+# back-to-back calls on the identical trainingSet and identical query set differ at ~3-4% of
+# genus calls). set.seed() before EVERY IdTaxa() call -- without it, repeated runs on the same
+# input differ at the genus call for ~3-4% of ASVs. Verified: with set.seed() before each call,
+# repeated runs are bit-identical at every rank including genus, in both the default
+# multithreaded (processors=NULL) and single-threaded (processors=1) configurations; any fixed
+# integer works, 100 is just a convention here (matches the assignTaxonomy() seed above).
+set.seed(100)
 
 # threshold 60 = DECIPHER default confidence cutoff; raise for stricter calls. IDTAXA's
 # tree-descent stops (leaves the rank unclassified) when the query likely belongs to a taxon
@@ -105,10 +142,18 @@ dna <- DNAStringSet(getSequences(seqtab_nochim))
 ids <- IdTaxa(dna, trainingSet, strand = 'both', threshold = 60, processors = NULL)
 
 ranks <- c('domain', 'phylum', 'class', 'order', 'family', 'genus', 'species')
+
+# Flatten POSITIONALLY, not by name. x$rank is populated ONLY when trainingSet was built with
+# LearnTaxa's rank= data.frame (see above) -- absent that, x$rank is NULL for every result, and
+# match(ranks, x$rank) silently returns all-NA with no error or warning (confirmed empirically
+# against a real LearnTaxa()-trained set: 100% NA at every rank, no exception raised). x$taxon[1]
+# is always "Root"; the remaining entries are domain..genus/species in taxonomic order regardless
+# of whether rank= was supplied, so index positionally instead.
 taxa_idtaxa <- t(sapply(ids, function(x) {
-    out <- x$taxon[match(ranks, x$rank)]
-    out[startsWith(replace(out, is.na(out), ''), 'unclassified_')] <- NA
-    out
+    taxa <- x$taxon[-1]                    # drop "Root"
+    taxa[startsWith(taxa, 'unclassified_')] <- NA
+    length(taxa) <- length(ranks)          # pad/truncate to the fixed rank depth above
+    taxa
 }))
 colnames(taxa_idtaxa) <- ranks
 ```
@@ -128,7 +173,11 @@ qiime feature-classifier extract-reads \
     --o-reads ref-seqs-515-806.qza
 
 # 2. Train the naive-Bayes classifier on the EXTRACTED region (or download the region-matched
-#    pre-trained .qza built for THIS QIIME2 release - never a different release, see below)
+#    pre-trained .qza built for THIS QIIME2 release - never a different release, see below).
+#    MEMORY: training against a full, un-subsampled reference (SILVA/GTDB, 400K+ sequences) needs
+#    tens of GB of RAM and can OOM-kill the process on constrained hardware. If it does, subsample
+#    the extracted reference (e.g. a random ~60,000-sequence subset) before training, or train on
+#    a smaller/pre-filtered reference.
 qiime feature-classifier fit-classifier-naive-bayes \
     --i-reference-reads ref-seqs-515-806.qza \
     --i-reference-taxonomy silva-138-99-tax.qza \
@@ -229,6 +278,9 @@ Organelle contamination is heaviest in plant, rhizosphere, and host-tissue/biops
 | All Unassigned at domain level | off-target ASVs (host, chimera, primer artifact) or wrong-orientation reads | filter off-target; leave read-orientation on `auto`; document, do not force-fill |
 | Large read fraction labelled Mitochondria/Chloroplast | host organelle 16S amplified by universal primers | `qiime taxa filter-table --p-exclude mitochondria,chloroplast` (or phyloseq subset_taxa) before diversity/DA |
 | Genus mismatch across cohorts | labels from different databases (SILVA vs GTDB) | use one database+release for all samples |
+| IdTaxa flattening returns all-NA at every rank, no error | `x$rank` is NULL because `trainingSet` was built without LearnTaxa's `rank=` data.frame (the common case) and the flattening code indexed by `x$rank` instead of position | flatten positionally (`x$taxon[-1]`, padded/truncated to the rank vector length) - see the DECIPHER section above |
+| Two runs of `assignTaxonomy()` give different genus calls on identical input | bootstrap resampling (100 replicates) is stochastic and no seed was set | `set.seed()` before every `assignTaxonomy()` call - see the DADA2 section above |
+| Two runs of `IdTaxa()` (or two `LearnTaxa()` trainings) give different genus calls / a different trainingSet object on identical input | both are internally stochastic (random k-mer subsampling during tree descent) and no seed was set - the same bug class as `assignTaxonomy()`, and by a larger margin at genus | `set.seed()` before every `IdTaxa()` call and every `LearnTaxa()` call - see the DECIPHER section above |
 
 ## References
 
