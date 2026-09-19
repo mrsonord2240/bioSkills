@@ -29,7 +29,7 @@ The single most-missed gotcha: **SuperSeries**. A GSE may be a meta-container (`
 ## Required Setup
 
 ```bash
-pip install biopython GEOparse pandas
+pip install biopython GEOparse pandas pysradb
 # OR for R-side:
 # R: BiocManager::install('GEOquery')
 ```
@@ -39,6 +39,17 @@ from Bio import Entrez
 Entrez.email = 'researcher@institution.edu'
 Entrez.api_key = 'optional'
 ```
+
+## Workflow
+
+1. Search gds db with field-qualified terms (`gse[Entry Type]`, `Homo sapiens[Organism]`, `expression profiling by high throughput sequencing[GDS Type]`).
+2. For any GSE returned, check `!Series_relation` in SOFT to detect SuperSeries before pulling.
+3. Pick the right download path: series matrix for fast-and-trusting; supplementary files for raw Affymetrix / submitter counts; SRA-link for RNA-seq raw FASTQ.
+4. Read `!Sample_data_processing` to surface what's actually in the series matrix.
+5. For R-side analyses, recommend GEOquery (Bioconductor) over GEOparse for supplementary file reliability.
+6. For SRA hand-off, use pysradb to resolve GSE -> SRP -> SRR; pass run list to sra-data skill.
+7. Warn on stale GEOmetadb usage; recommend pysradb / Entrez gds.
+8. For ArrayExpress accessions (E-MTAB-*), use the new BioStudies URL.
 
 ## GEO record taxonomy
 
@@ -51,6 +62,8 @@ Entrez.api_key = 'optional'
 | GSEXXX SuperSeries | Series meta-container | Wraps multiple SubSeries | `!Series_relation = SuperSeries of: ...` |
 
 **`GDS` is dead-as-format**: NCBI stopped creating new GDS records in 2018. Existing GDS still queryable but use GSE for anything current.
+
+**`GDS` is overloaded**: Entrez's `db='gds'` is the query endpoint indexing all four record types (GSE/GSM/GPL/GDS) despite the name; don't confuse it with the `GDS` record-type prefix above, which means specifically the frozen curated DataSet type.
 
 ## The SuperSeries trap
 
@@ -82,6 +95,16 @@ Symmetric trap: a paper may cite a SubSeries (`SubSeries of: GSEsuper`) where th
 
 **Default to raw whenever possible.** For Affymetrix: CEL + locally-run RMA is far more reliable than the submitter's "normalized" matrix. For RNA-seq: SRA FASTQ + locally-run alignment/quantification is the only reproducible path; submitter counts often use a private pipeline.
 
+**Determining platform technology (array vs RNA-seq):** an ESummary record's `gdsType` field states this directly (e.g. `"Expression profiling by high throughput sequencing"` -> RNA-seq; `"Expression profiling by array"` / `"Methylation profiling by array"` -> array-based, likely Affymetrix or Illumina):
+
+```python
+h = Entrez.esearch(db='gds', term='GSE147507[Accession]', retmax=1)
+s = Entrez.read(h); h.close()
+h = Entrez.esummary(db='gds', id=s['IdList'][0])
+gse_record = Entrez.read(h)[0]; h.close()
+is_sequencing = 'high throughput sequencing' in gse_record.get('gdsType', '')
+```
+
 ## Series matrix files
 
 A series matrix (`GSE12345_series_matrix.txt.gz`) is a header (sample metadata as `!Sample_*` lines) plus a sample-by-feature expression table. The format is fragile and the values' provenance is whatever the submitter chose. Critical caveats:
@@ -89,6 +112,7 @@ A series matrix (`GSE12345_series_matrix.txt.gz`) is a header (sample metadata a
 - For Affymetrix: the matrix is usually RMA-normalized but submitters sometimes apply additional transforms (log2, scaling, batch correction).
 - For RNA-seq: the matrix is sometimes log-CPM, sometimes raw counts, sometimes VST/rlog — read `!Series_overall_design` and `!Sample_data_processing` to know.
 - The header has `!Sample_characteristics_ch1` rows that hold the metadata of interest — these are submitter-formatted strings, often inconsistent within one series.
+- `!Sample_data_processing` can be **entirely absent**, not just terse (e.g. GSE470 has zero such lines) — always read it via `metadata.get('!Sample_data_processing', [])`, never direct key access, and treat an empty result as "field not provided," not "no processing was done."
 
 ## SOFT vs MINiML
 
@@ -179,7 +203,7 @@ def check_super_or_sub_series(gse):
     urllib.request.urlretrieve(url, f'{gse}.soft.gz')
     super_of = []
     sub_of = None
-    with gzip.open(f'{gse}.soft.gz', 'rt') as f:
+    with gzip.open(f'{gse}.soft.gz', 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('!Series_relation'):
                 if 'SuperSeries of' in line:
@@ -191,8 +215,9 @@ def check_super_or_sub_series(gse):
     return {'super_of': super_of, 'sub_of': sub_of}
 
 
-print(check_super_or_sub_series('GSE122288'))
-# {'super_of': ['GSExxxxx', 'GSEyyyyy'], 'sub_of': None}  -> SuperSeries; process subseries separately
+print(check_super_or_sub_series('GSE346738'))
+# {'super_of': ['GSE283260', 'GSE346737'], 'sub_of': None}  -> SuperSeries; process subseries separately
+# (checked live 2026-09-19; SuperSeries status drifts as submitters restructure series, re-verify before relying on a fixed example)
 ```
 
 ### Download series matrix with submitter caveat
@@ -211,7 +236,7 @@ def download_series_matrix(gse):
 
 def parse_series_matrix(path):
     metadata = {}
-    with gzip.open(path, 'rt') as f:
+    with gzip.open(path, 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('!series_matrix_table_begin'):
                 break

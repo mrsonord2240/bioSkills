@@ -6,17 +6,7 @@ Query NCBI GEO (and EMBL-EBI's BioStudies/ArrayExpress mirror) for expression da
 
 ## Prerequisites
 
-```bash
-pip install biopython GEOparse pandas pysradb
-# OR for R:
-# R: BiocManager::install('GEOquery')
-```
-
-```python
-from Bio import Entrez
-Entrez.email = 'researcher@institution.edu'
-Entrez.api_key = 'optional'
-```
+See SKILL.md's "Required Setup" section.
 
 ## Quick Start
 
@@ -50,25 +40,7 @@ Entrez.api_key = 'optional'
 
 ## What the Agent Will Do
 
-1. Search gds db with field-qualified terms (`gse[Entry Type]`, `Homo sapiens[Organism]`, `expression profiling by high throughput sequencing[GDS Type]`).
-2. For any GSE returned, check `!Series_relation` in SOFT to detect SuperSeries before pulling.
-3. Pick the right download path: series matrix for fast-and-trusting; supplementary files for raw Affymetrix / submitter counts; SRA-link for RNA-seq raw FASTQ.
-4. Read `!Sample_data_processing` to surface what's actually in the series matrix.
-5. For R-side analyses, recommend GEOquery (Bioconductor) over GEOparse for supplementary file reliability.
-6. For SRA hand-off, use pysradb to resolve GSE -> SRP -> SRR; pass run list to sra-data skill.
-7. Warn on stale GEOmetadb usage; recommend pysradb / Entrez gds.
-8. For ArrayExpress accessions (E-MTAB-*), use the new BioStudies URL.
-
-## Tips
-
-- The SuperSeries trap is the single biggest GEO mistake. ALWAYS check `!Series_relation` for `SuperSeries of: ...` before treating a GSE as one experiment.
-- Submitter-normalized series matrices vary widely. For Affymetrix, default to CEL + locally-run RMA. For RNA-seq, default to SRA FASTQ + locally-run quantification.
-- GEOparse (Python) is OK for SOFT parsing but flakey on supplementary-file download since ~2022. For Python pipelines that need suppl files, use direct FTP (`wget -r` on `suppl/`).
-- For R workflows, GEOquery is the mature choice; getGEOSuppFiles is more reliable than GEOparse's equivalent.
-- `[Entry Type]` is case-sensitive: `gse[Entry Type]` works; `gse[entry_type]` returns empty.
-- GEOmetadb is unmaintained since 2020. Use pysradb for GSE<->SRA mapping; Entrez gds for full GEO search.
-- ArrayExpress was migrated into BioStudies in 2020; old `E-MTAB-*` accessions still resolve via `https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-XXXX`.
-- For curated re-processed RNA-seq across thousands of GEO studies, ARCHS4 (https://archs4.org) and recount3 are alternatives with consistent pipelines.
+See SKILL.md's "Workflow" section.
 
 ## Related Skills
 
