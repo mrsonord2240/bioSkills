@@ -58,6 +58,7 @@ uwu <- UniFrac(ps_rare, weighted = FALSE)   # rare-lineage + topology view
 bray <- phyloseq::distance(ps_rare, method = 'bray')
 
 meta <- data.frame(sample_data(ps_rare))
+meta$Group <- sample_data(ps_rare)$SampleType
 # permutations=999: resolution floor for p ~ 0.001; use 9999 for publication.
 perm_wu  <- adonis2(wu  ~ Group, data = meta, permutations = 999)
 perm_uwu <- adonis2(uwu ~ Group, data = meta, permutations = 999)
