@@ -108,8 +108,14 @@ load('SILVA_SSU_r138_2019.RData')  # provides the trainingSet object, if you hav
 
 # No pre-trained .RData for your marker/region? Train one directly from a reference FASTA +
 # matching "Root;domain;phylum;...;genus;" taxonomy strings (one per sequence, same order).
+# LearnTaxa() tunes its tree-descent k-mer sampling with repeated random subsamples (its own
+# documentation: "this process is repeated with 100 random subsamples") -- inherently stochastic,
+# same class of bug as IdTaxa() below. Verified: two unseeded LearnTaxa() calls on identical input
+# produce non-identical trainingSet objects; set.seed() before EVERY LearnTaxa() call makes the
+# trainingSet object itself reproducible (identical() TRUE).
 # refseqs <- readDNAStringSet('region-matched-ref.fasta')
 # reftax  <- readLines('region-matched-ref-taxonomy.txt')  # e.g. "Root;Bacteria;Firmicutes;...;"
+# set.seed(100)
 # trainingSet <- LearnTaxa(refseqs, taxonomy = reftax)
 # MEMORY: LearnTaxa() against a full, un-subsampled reference (400K+ sequences) needs tens of GB
 # of RAM and can crash on constrained hardware; subsample the reference (e.g. ~60,000 sequences)
@@ -119,6 +125,16 @@ load('SILVA_SSU_r138_2019.RData')  # provides the trainingSet object, if you hav
 # see the flattening note below for why it matters anyway.
 
 dna <- DNAStringSet(getSequences(seqtab_nochim))
+
+# IdTaxa() descends its classification tree with an internal stochastic step -- inherently
+# stochastic, same as assignTaxonomy() above, and by a LARGER margin (verified: unseeded, two
+# back-to-back calls on the identical trainingSet and identical query set differ at ~3-4% of
+# genus calls). set.seed() before EVERY IdTaxa() call -- without it, repeated runs on the same
+# input differ at the genus call for ~3-4% of ASVs. Verified: with set.seed() before each call,
+# repeated runs are bit-identical at every rank including genus, in both the default
+# multithreaded (processors=NULL) and single-threaded (processors=1) configurations; any fixed
+# integer works, 100 is just a convention here (matches the assignTaxonomy() seed above).
+set.seed(100)
 
 # threshold 60 = DECIPHER default confidence cutoff; raise for stricter calls. IDTAXA's
 # tree-descent stops (leaves the rank unclassified) when the query likely belongs to a taxon
@@ -264,6 +280,7 @@ Organelle contamination is heaviest in plant, rhizosphere, and host-tissue/biops
 | Genus mismatch across cohorts | labels from different databases (SILVA vs GTDB) | use one database+release for all samples |
 | IdTaxa flattening returns all-NA at every rank, no error | `x$rank` is NULL because `trainingSet` was built without LearnTaxa's `rank=` data.frame (the common case) and the flattening code indexed by `x$rank` instead of position | flatten positionally (`x$taxon[-1]`, padded/truncated to the rank vector length) - see the DECIPHER section above |
 | Two runs of `assignTaxonomy()` give different genus calls on identical input | bootstrap resampling (100 replicates) is stochastic and no seed was set | `set.seed()` before every `assignTaxonomy()` call - see the DADA2 section above |
+| Two runs of `IdTaxa()` (or two `LearnTaxa()` trainings) give different genus calls / a different trainingSet object on identical input | both are internally stochastic (random k-mer subsampling during tree descent) and no seed was set - the same bug class as `assignTaxonomy()`, and by a larger margin at genus | `set.seed()` before every `IdTaxa()` call and every `LearnTaxa()` call - see the DECIPHER section above |
 
 ## References
 
