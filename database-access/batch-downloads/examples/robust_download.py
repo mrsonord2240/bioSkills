@@ -56,6 +56,8 @@ def checkpointed_download(db, term, out_path, ckpt_path, rettype='fasta',
                                       retstart=start, retmax=batch_size,
                                       webenv=webenv, query_key=query_key)
                     body = h.read(); h.close()
+                    if isinstance(body, bytes):
+                        body = body.decode('utf-8', errors='replace')
                     if not body.strip():
                         raise RuntimeError('Empty body')
                     if '<ERROR>' in body[:500]:
@@ -94,7 +96,9 @@ def checkpointed_download(db, term, out_path, ckpt_path, rettype='fasta',
 if __name__ == '__main__':
     checkpointed_download(
         db='nucleotide',
-        term='Mus musculus[ORGN] AND hemoglobin[Gene Name] AND srcdb_refseq[PROP] AND biomol_mrna[PROP]',
-        out_path='mouse_hemoglobin.fasta',
-        ckpt_path='mouse_hemoglobin.ckpt.json',
+        # Gene-symbol field tags need the official gene symbol, not a descriptive word
+        # (checked live 2026-09-19: 'hemoglobin[Gene Name]' returns Count=0).
+        term='BRCA1[GENE] AND Homo sapiens[ORGN] AND biomol_mrna[PROP] AND srcdb_refseq[PROP]',
+        out_path='brca1_mrna.fasta',
+        ckpt_path='brca1_mrna.ckpt.json',
     )

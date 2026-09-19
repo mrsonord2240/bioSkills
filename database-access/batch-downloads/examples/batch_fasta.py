@@ -40,18 +40,24 @@ def datasets_cli_genome(taxon, out_zip='genome.zip'):
 
 
 print('=== History-server download (small query) ===')
+OUT_PATH = 'insulin_mrna.fasta'
 elapsed = history_server_download(
     'nucleotide',
-    'Homo sapiens[ORGN] AND insulin[Gene Name] AND srcdb_refseq[PROP] AND biomol_mrna[PROP]',
-    'insulin_mrna.fasta',
+    # Gene-symbol field tags need the official gene symbol, not a descriptive word
+    # (checked live 2026-09-19: 'insulin[Gene Name]' returns Count=0; 'INS[GENE]' does not).
+    'Homo sapiens[ORGN] AND INS[GENE] AND srcdb_refseq[PROP] AND biomol_mrna[PROP]',
+    OUT_PATH,
 )
 print(f'  elapsed: {elapsed:.1f}s')
 
 print('\n=== Verify integrity ===')
-records = list(SeqIO.parse('insulin_mrna.fasta', 'fasta'))
-print(f'  {len(records)} records in file')
-for r in records[:5]:
-    print(f'    {r.id}: {len(r.seq)} nt')
+if elapsed == 0:
+    print('  No records found -- nothing to verify')
+else:
+    records = list(SeqIO.parse(OUT_PATH, 'fasta'))
+    print(f'  {len(records)} records in file')
+    for r in records[:5]:
+        print(f'    {r.id}: {len(r.seq)} nt')
 
 print('\n=== When to defect to Datasets CLI ===')
 print('For genome assemblies, use:')
