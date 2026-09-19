@@ -6,18 +6,7 @@ Bulk-download records from NCBI E-utilities efficiently. Encodes the strategy de
 
 ## Prerequisites
 
-```bash
-pip install biopython
-# For the modern bulk path on genome/gene data:
-conda install -c conda-forge ncbi-datasets-cli
-```
-
-```python
-from Bio import Entrez
-Entrez.email = 'researcher@institution.edu'
-Entrez.api_key = 'YOUR_KEY'  # Get at ncbi.nlm.nih.gov/account/settings/; mandatory for bulk
-Entrez.tool = 'project-name'
-```
+See SKILL.md's Required Setup section for install commands and the `Entrez.email`/`api_key`/`tool` setup code.
 
 ## Quick Start
 
@@ -48,29 +37,6 @@ Entrez.tool = 'project-name'
 ### Post-download integrity
 
 > "After the download, parse the output FASTA with SeqIO and assert the record count matches what ESearch returned. If not, surface a warning."
-
-## What the Agent Will Do
-
-1. Pick the retrieval strategy from the decision matrix in SKILL.md based on record count, source DB, and whether IDs are known.
-2. Set Entrez.email/api_key/tool before any call.
-3. Use `usehistory='y'` for any ESearch expected to return >5000 records.
-4. EPost ID lists >200 in chunks of 200.
-5. Choose `batch_size` per rettype (500-1000 FASTA; 100-200 GB/XML).
-6. Apply correct sleep (0.34s without key, 0.10s with key).
-7. Implement disk checkpointing of `retstart` cursor for resumability.
-8. Detect WebEnv expiry by parsing response body for `<ERROR>` (HTTP 200 is misleading).
-9. On retry: jittered exponential backoff for 429; truncate-to-newline for partial-chunk recovery.
-10. Defect to `datasets` CLI for genome/gene bulk work; document the choice.
-
-## Tips
-
-- Parallelizing API calls is the wrong bulk strategy. One stream with the history server + larger batches is faster and more polite than N parallel streams. Max ~4 workers with API key, 1 without.
-- For >100,000 records of any kind, run the job outside US weekday business hours (NCBI ToS).
-- WebEnv has an 8-hour absolute TTL and ~15-min idle eviction. Long jobs MUST checkpoint to disk and re-run ESearch on expiry.
-- The 9,999 silent retmax cap (legacy esearch.fcgi without `usehistory='y'`) drops the rest of the result set with no error. Always use the history server above 5,000.
-- For genome assemblies, NCBI Datasets v2 CLI is the supported bulk endpoint. It handles checksums and parallel download out of the box. Use E-utils only when Datasets doesn't cover the data type.
-- Always verify post-download: SeqIO record count vs ESearch Count is a 1-line integrity check.
-- For raw sequencing reads, batch-downloads is not the right skill -- use `sra-data` (SRA toolkit) or ENA mirror.
 
 ## Related Skills
 
