@@ -11,7 +11,7 @@ conda install -c bioconda cutadapt itsxpress
 ```
 
 ```r
-install.packages('BiocManager')
+install.packages(c('BiocManager', 'ggplot2'))   # ggplot2 for plotErrors()/ggsave()
 BiocManager::install(c('dada2', 'decontam'))
 ```
 
