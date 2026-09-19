@@ -51,6 +51,8 @@ def gse_to_srr_entrez(gse):
 
     h = Entrez.efetch(db='sra', id=','.join(sra_uids), rettype='runinfo', retmode='text')
     text = h.read(); h.close()
+    if isinstance(text, bytes):
+        text = text.decode('utf-8')
     runs = []
     for line in text.strip().split('\n')[1:]:
         if line:

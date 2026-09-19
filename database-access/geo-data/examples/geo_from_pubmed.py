@@ -24,7 +24,7 @@ def article_info(pmid):
     return r
 
 
-PMID = '32228226'  # Blanco-Melo et al. 2020 *Cell* (COVID-19 transcriptional response)
+PMID = '32416070'  # Blanco-Melo et al. 2020 *Cell* (COVID-19 transcriptional response) -> GSE147507
 
 print('=== Article ===')
 art = article_info(PMID)

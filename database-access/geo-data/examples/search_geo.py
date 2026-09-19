@@ -2,6 +2,7 @@
 # Reference: biopython 1.83+, entrez direct 21.0+ | Verify API if version differs
 from Bio import Entrez
 import gzip
+import io
 import urllib.request
 import time
 
@@ -34,7 +35,8 @@ def detect_super_series(gse):
     except Exception as e:
         return {'super_of': [], 'sub_of': None, 'error': str(e)}
     super_of, sub_of = [], None
-    with gzip.GzipFile(fileobj=__import__('io').BytesIO(data), mode='rt') as f:
+    with gzip.GzipFile(fileobj=io.BytesIO(data), mode='rb') as fb:
+        f = io.TextIOWrapper(fb, encoding='utf-8', errors='replace')
         for line in f:
             if line.startswith('^SAMPLE'):
                 break
