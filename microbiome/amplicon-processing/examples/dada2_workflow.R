@@ -3,11 +3,15 @@
 # Primers MUST be removed (cutadapt --discard-untrimmed) BEFORE this script runs; see remove_primers.sh.
 # Leaving primers on corrupts the error model and fakes chimeras, so the order is non-negotiable.
 library(dada2)
+library(ggplot2)   # ggsave() below needs this loaded explicitly - plotErrors() returns a ggplot object but does not attach the package
 
 # truncLen is a DETECTION BUDGET, not just a quality cut: truncLen_F + truncLen_R must exceed
 # amplicon_length + minOverlap (DADA2 default minOverlap = 12) or denoised pairs cannot merge.
-# These values suit 16S V4 (~253 bp) on 2x250; for V3-V4 (~460 bp) keep more length and loosen maxEE_R.
-truncLen <- c(240, 200)
+# truncLen ALSO has a silent ceiling: it must not exceed the read length AFTER cutadapt removed the
+# primer, or filterAndTrim drops every read with no error (only "No reads passed the filter").
+# For V4/2x250 with 515F(19bp)/806R(20bp) removed, ~231bp/~230bp remain - NOT the raw 250bp cycle
+# count. These values suit that case; for V3-V4 (~460 bp) keep more length and loosen maxEE_R.
+truncLen <- c(220, 200)
 maxEE <- c(2, 2)         # expected-errors filter (on the TRUNCATED read); beats a hard Q cutoff. Default 2.
 truncQ <- 2             # truncate each read at the first base with Q <= 2
 

@@ -99,7 +99,7 @@ The QIIME2 equivalent is `qiime cutadapt trim-paired --p-front-f FWD --p-front-r
 library(dada2)
 
 out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs,
-                     truncLen=c(240, 160),     # region/read-length specific; subject to the merge budget below
+                     truncLen=c(220, 200),     # V4/2x250 AFTER cutadapt strips 515F/806R (~231bp/~230bp remain) - see below
                      maxEE=c(2, 2), truncQ=2, maxN=0, rm.phix=TRUE,
                      compress=TRUE, multithread=TRUE)
 errF <- learnErrors(filtFs, multithread=TRUE)  # fit THIS run only
@@ -115,10 +115,12 @@ seqtab_run <- makeSequenceTable(mergers)
 
 Paired-end merging needs `truncLen_F + truncLen_R >= amplicon_length + ~12` (DADA2 `minOverlap` default is 12). truncLen is jointly constrained by quality (cut where median Q drops below ~Q30 on `plotQualityProfile`) AND this overlap budget; the two fight, and for long amplicons the budget wins.
 
-- **V4 (515F/806R, ~253 bp), 2x250:** 250+250 vs 253+12 leaves huge slack - truncate to quality freely (e.g. `c(240, 200)`).
+**There is also a silent ceiling: truncLen must not exceed the read length AFTER cutadapt, not the raw cycle count.** `filterAndTrim` does not pad a short read up to truncLen - a read shorter than truncLen is dropped entirely. Ask for a truncLen longer than what primer removal left and the filter can discard every read with no error, only a `No reads passed the filter` warning as the tell. A 2x250 MiSeq run with the 19bp 515F / 20bp 806R primers removed leaves reads only ~231bp/~230bp long, not 250bp - confirmed by running the primer-trimmed read length before truncating (`plotQualityProfile`, or `nchar` a few reads), not by assuming the raw cycle count.
+
+- **V4 (515F/806R, ~253 bp), 2x250:** 250+250 raw vs 253+12 leaves huge slack, but after cutadapt strips the primers only ~231bp/~230bp remain - truncate to quality freely within THAT length (e.g. `c(220, 200)`), not against the raw 250bp cycle count.
 - **V3-V4 (341F/805R, ~460 bp), 2x250:** 250+250 vs 460+12 leaves only ~28 bp slack. Aggressive truncation of both reads kills the overlap and the merge rate collapses to near zero. Preserve length: barely truncate the reverse and loosen `maxEE` to `c(2, 5)` to keep low-Q reverse reads.
 
-A merge cliff in the read-tracking table is a budget problem, not bad data - the taxa were erased by arithmetic.
+A merge cliff in the read-tracking table is a budget problem, not bad data - the taxa were erased by arithmetic. A filter that drops every read outright is the OTHER end of the same truncLen budget - too high against the post-primer-trim length, not too low against the merge budget.
 
 ## Combine Runs, Then Remove Chimeras
 
@@ -209,6 +211,7 @@ Do not merge a DADA2 ASV table with a Deblur sOTU table - different feature defi
 |-----------|--------|-----------|
 | `maxEE` c(2,2) (loosen R to 5 for long amplicons) | Callahan 2016 *Nat Methods* 13:581 | expected-errors filter beats a hard Q cutoff; computed on the TRUNCATED read, so it interacts with truncLen |
 | truncLen budget: truncLen_F + truncLen_R >= amplicon_len + 12 | DADA2 `mergePairs` `minOverlap` default | below this, denoised pairs cannot merge; the merge cliff is arithmetic, not data |
+| truncLen ceiling: <= read length AFTER cutadapt (not the raw cycle count) | DADA2 `filterAndTrim` behavior | a read shorter than truncLen is dropped, not padded; too high here silently empties the filter output |
 | truncLen cut where median Q < ~25-30 | DADA2 docs | quality target, secondary to the merge budget for long amplicons |
 | `maxN` = 0 | DADA2 docs | DADA2 cannot model ambiguous bases; mandatory |
 | chimera retained-read fraction ~0.8-0.99 | DADA2 docs | chimeras are many ASVs but few reads; a large read loss flags leftover primers |
@@ -224,7 +227,7 @@ Do not merge a DADA2 ASV table with a Deblur sOTU table - different feature defi
 | Large read fraction "chimeric" | primers not trimmed (degenerate bases) | cutadapt `--discard-untrimmed` before filtering |
 | `plotErrors` fitted line diverges from points | binned quality (NovaSeq/NextSeq) | enforce monotonic error matrix; nf-core/ampliseq `--illumina_novaseq` |
 | ASVs vanish/appear when runs split | one error model fit across runs | per-run `learnErrors`, then `mergeSequenceTables` |
-| Few reads pass filter | `maxEE` too strict or truncLen too long (low-Q tail) | loosen `maxEE`, shorten truncLen within the budget |
+| Zero or few reads pass filter | `maxEE` too strict, or truncLen exceeds the post-cutadapt read length (not the raw cycle count) | loosen `maxEE`; check the actual trimmed read length and set truncLen below it, within the merge budget |
 | ITS taxa lost / poor merging | fixed `truncLen` on ITS | cutadapt + ITSxpress, then `truncLen=0` |
 
 ## References
