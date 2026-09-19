@@ -16,6 +16,10 @@ minBoot <- 50  # DADA2 default and the RDP recommendation for reads <=250 nt; tu
                # 80 (a stricter CHOICE). Raising it truncates to shallower-but-reliable ranks;
                # ranks below the floor are returned as NA, not guessed.
 
+# assignTaxonomy() runs 100 stochastic bootstrap resamples per sequence; without a seed, two runs
+# on identical input produce different genus calls for a real fraction of ASVs. set.seed() before
+# the call makes it reproducible (any fixed integer works; 100 is just a convention here).
+set.seed(100)
 taxa <- assignTaxonomy(seqtab_nochim, silva_train, minBoot = minBoot, tryRC = TRUE, multithread = TRUE)
 
 # addSpecies assigns species ONLY by exact (100%) match against the species reference - it does

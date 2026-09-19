@@ -24,6 +24,8 @@ qiime feature-classifier extract-reads \
 # 2. Train naive Bayes on the EXTRACTED region. The output .qza is a pickled scikit-learn model
 #    tied to THIS QIIME2 release; a classifier from another release errors on load. Retraining
 #    here (vs downloading a pre-trained .qza) guarantees the sklearn versions match.
+#    MEMORY: a full, un-subsampled reference (400K+ sequences) can need tens of GB of RAM and
+#    OOM-kill this step; subsample the reference first if that happens.
 qiime feature-classifier fit-classifier-naive-bayes \
     --i-reference-reads ref-seqs-515-806.qza \
     --i-reference-taxonomy "${REF_TAX}" \
